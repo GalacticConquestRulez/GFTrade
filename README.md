@@ -269,14 +269,19 @@ Pipeline per scan tick (default every 90s):
 the screens, the list fills with the best-scored **near-misses**, each
 marked 🔻 with the exact threshold it failed ("liquidity $7,400 below
 floor $10,000"). If the same reason keeps appearing on coins you'd want
-to see, loosen that threshold — the big four (min liquidity, min 1h
-volume, min 1h buys, max age) are editable live from `/settings`, no
-restart needed. Near-misses are display-only: they can never be alerted
-or auto-bought.
+to see, loosen that threshold — the big five (min liquidity, min 1h
+volume, min 1h buys, min age in minutes, max age in hours) are editable
+live from `/settings`, no restart needed. Near-misses are display-only:
+they can never be alerted or auto-bought.
+
+Min age deserves its own warning: the default 20-minute delay exists
+because a pair's first minutes are peak rug/honeypot territory. Lowering
+it (0 disables the delay) lets alerts and autobuy reach coins minutes
+after launch — autobuy still demands every safety check pass, but
+younger means less history for every heuristic to chew on.
 
 The remaining constants live in `config.py` (server edit + restart):
 
-- `MIN_PAIR_AGE_MINUTES` — the "let it breathe" delay on brand-new pairs
 - `MIN/MAX_LIQ_TO_MCAP_RATIO` — the manipulation-sanity core of the system
 - `MIN_BUYS_5M`, `MAX_BUY_SELL_IMBALANCE` — short-window activity shape
 - `MAX_TOP10_HOLDER_PCT` — holder-concentration cap
