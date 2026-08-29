@@ -54,6 +54,8 @@ class SolanaRpc:
             "supply": int(info.get("supply") or 0),
             "mint_authority": info.get("mintAuthority"),
             "freeze_authority": info.get("freezeAuthority"),
+            # which token program owns the mint (classic SPL vs Token-2022)
+            "owner_program": value.get("owner"),
         }
 
     async def get_token_largest_accounts(self, mint: str) -> list:

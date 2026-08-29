@@ -24,7 +24,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 
-from .. import config
+from .. import config, constants
 
 
 @dataclass
@@ -35,12 +35,14 @@ class SafetyReport:
     freeze_none: bool = None
     top10_pct: float = None        # excludes the largest single account
     lp_locked_pct: float = None    # None = RugCheck couldn't tell us
+    standard_token: bool = None    # classic SPL Token program? False = Token-2022 etc.
     error: str = None
 
     def _checks(self) -> list:
         checks = [
             self.mint_renounced,
             self.freeze_none,
+            self.standard_token,
             (self.top10_pct <= config.MAX_TOP10_HOLDER_PCT)
             if self.top10_pct is not None else None,
         ]
@@ -68,6 +70,8 @@ class SafetyReport:
             f"Freeze {mark(self.freeze_none, '✅ none', '🚨 ACTIVE')}",
             f"Top10 {top10}",
         ]
+        if self.standard_token is False:
+            parts.append("🚨 Token-2022 (sell-trap extensions possible)")
         if config.LP_CHECK_ENABLED:
             if self.lp_locked_pct is None:
                 parts.append("LP ❓")
@@ -110,6 +114,10 @@ class SafetyChecker:
                 report.decimals = mint_info["decimals"]
                 report.mint_renounced = mint_info["mint_authority"] is None
                 report.freeze_none = mint_info["freeze_authority"] is None
+                owner = mint_info.get("owner_program")
+                report.standard_token = (
+                    None if owner is None else owner == constants.TOKEN_PROGRAM_ID
+                )
                 supply = mint_info["supply"]
                 if supply > 0:
                     largest = await self._rpc.get_token_largest_accounts(mint)

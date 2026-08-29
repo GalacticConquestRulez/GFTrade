@@ -330,6 +330,8 @@ def safety_flag(verdict: dict) -> str:
         return "🚫 mint active"
     if report.freeze_none is False:
         return "🚫 freeze on"
+    if report.standard_token is False:
+        return "🚫 token-2022"
     if report.top10_pct is not None and report.top10_pct > config.MAX_TOP10_HOLDER_PCT:
         return f"🚫 top10 {report.top10_pct:.0f}%"
     if config.LP_CHECK_ENABLED and report.lp_locked_pct is not None \

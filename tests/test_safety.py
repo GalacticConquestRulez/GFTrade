@@ -30,8 +30,11 @@ class FakeRugCheck:
         return self.pct
 
 
+from gftrade import constants
+
 CLEAN_MINT_INFO = {"decimals": 9, "supply": 1000,
-                   "mint_authority": None, "freeze_authority": None}
+                   "mint_authority": None, "freeze_authority": None,
+                   "owner_program": constants.TOKEN_PROGRAM_ID}
 
 
 def accounts(*amounts):
@@ -66,6 +69,29 @@ async def test_unknown_lp_strict_rejects_lenient_allows():
         assert report.lp_locked_pct is None
         assert not report.passes(strict=True)
         assert report.passes(strict=False)
+
+
+async def test_token_2022_mint_fails_both_modes():
+    """Non-standard token programs can carry sell-trap extensions our
+    authority checks can't see — treated as known-bad, not unknown."""
+    rpc = FakeRpc({**CLEAN_MINT_INFO,
+                   "owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"},
+                  largest=accounts(500, 10))
+    report = await SafetyChecker(rpc, FakeRugCheck(100.0)).check("MINT")
+    assert report.standard_token is False
+    assert not report.passes(strict=True)
+    assert not report.passes(strict=False)
+    assert "Token-2022" in report.line()
+
+
+async def test_missing_owner_program_is_unknown_not_bad():
+    info = dict(CLEAN_MINT_INFO)
+    del info["owner_program"]
+    rpc = FakeRpc(info, largest=accounts(500, 10))
+    report = await SafetyChecker(rpc, FakeRugCheck(100.0)).check("MINT")
+    assert report.standard_token is None
+    assert not report.passes(strict=True)   # unproven -> strict rejects
+    assert report.passes(strict=False)      # but it's not known-bad
 
 
 async def test_active_freeze_authority_fails_both_modes():

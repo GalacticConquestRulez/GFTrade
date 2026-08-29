@@ -59,7 +59,8 @@ def make_strong_pair(mint=MINT_A, symbol="MOON", **overrides):
 
 
 GOOD_SAFETY = SafetyReport(mint=MINT_A, decimals=9, mint_renounced=True,
-                           freeze_none=True, top10_pct=10.0, lp_locked_pct=100.0)
+                           freeze_none=True, top10_pct=10.0, lp_locked_pct=100.0,
+                           standard_token=True)
 
 
 class FakeDex:

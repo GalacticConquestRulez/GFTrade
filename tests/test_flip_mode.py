@@ -9,9 +9,11 @@ from conftest import MINT_A, FakeDex, FakeSafety, make_strong_pair
 
 
 UNVERIFIED = SafetyReport(mint=MINT_A, mint_renounced=True, freeze_none=True,
-                          top10_pct=10.0, lp_locked_pct=None)  # ❓ only
+                          top10_pct=10.0, lp_locked_pct=None,
+                          standard_token=True)  # ❓ only
 KNOWN_BAD = SafetyReport(mint=MINT_A, mint_renounced=True, freeze_none=False,
-                         top10_pct=10.0, lp_locked_pct=100.0)  # honeypot lever
+                         top10_pct=10.0, lp_locked_pct=100.0,
+                         standard_token=True)  # honeypot lever
 
 
 def build(store, report):
@@ -70,7 +72,7 @@ async def test_exit_only_tick_skips_discovery(store):
     signals — discovery stays on the slow interval."""
     scanner = build(store, SafetyReport(mint=MINT_A, mint_renounced=True,
                                         freeze_none=True, top10_pct=10.0,
-                                        lp_locked_pct=100.0))
+                                        lp_locked_pct=100.0, standard_token=True))
     events = await scanner.tick(discover=False)
     assert events == []
     assert scanner.pool == {}          # feeds never consulted

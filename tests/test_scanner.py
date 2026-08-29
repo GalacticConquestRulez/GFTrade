@@ -128,9 +128,10 @@ class MixedSafety:
         from gftrade.discovery.safety import SafetyReport
         if mint == MINT_B:
             return SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
-                                top10_pct=10.0, lp_locked_pct=3.0)  # unlocked LP
+                                top10_pct=10.0, lp_locked_pct=3.0,  # unlocked LP
+                                standard_token=True)
         return SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
-                            top10_pct=10.0, lp_locked_pct=100.0)
+                            top10_pct=10.0, lp_locked_pct=100.0, standard_token=True)
 
 
 def build_mixed_scanner(store):

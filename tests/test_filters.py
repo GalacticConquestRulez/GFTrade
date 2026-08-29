@@ -71,3 +71,23 @@ def test_rejects_low_buy_counts():
 def test_rejects_wash_shaped_imbalance():
     ok, reasons = reasons_for(buys_5m=50, sells_5m=5)
     assert not ok and "wash" in reasons
+
+
+def test_zero_sells_with_buy_flow_is_honeypot_signature():
+    """Many buys and NO sells means there's no evidence anyone can sell —
+    the sim would happily record a fake win on such a coin."""
+    ok, reasons = reasons_for(buys_h1=60, sells_h1=0, buys_5m=8, sells_5m=3)
+    assert not ok and "honeypot signature" in reasons
+    # a genuinely quiet coin with few buys isn't accused
+    ok, reasons = filters.screen_pair(make_pair(buys_h1=5, sells_h1=0))
+    assert "honeypot" not in " | ".join(reasons)
+
+
+def test_h1_sell_throttle_ratio_rejected():
+    ok, reasons = reasons_for(buys_h1=200, sells_h1=10, buys_5m=8, sells_5m=3)
+    assert not ok and "throttled sells" in reasons
+
+
+def test_healthy_two_sided_flow_still_passes():
+    ok, reasons = filters.screen_pair(make_pair())
+    assert ok, reasons

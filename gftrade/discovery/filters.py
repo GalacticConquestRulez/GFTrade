@@ -88,11 +88,14 @@ def screen_pair(pair: dict, boosted_addresses: set = None, now_ms: float = None,
     if volume_h1 < min_volume_h1:
         reasons.append(f"1h volume ${volume_h1:,.0f} below floor ${min_volume_h1:,.0f}")
 
-    # 7. Organic-activity checks on transaction counts
+    # 7. Organic-activity checks on transaction counts. Successful sells are
+    #    the only market-data evidence that selling WORKS — many buys with
+    #    zero sells is the honeypot signature, not enthusiasm.
     txns = pair.get("txns") or {}
     buys_5m = (txns.get("m5") or {}).get("buys", 0)
     sells_5m = (txns.get("m5") or {}).get("sells", 0)
     buys_h1 = (txns.get("h1") or {}).get("buys", 0)
+    sells_h1 = (txns.get("h1") or {}).get("sells", 0)
     if buys_5m < config.MIN_BUYS_5M:
         reasons.append(f"only {buys_5m} buys in 5m, floor {config.MIN_BUYS_5M}")
     if buys_h1 < min_buys_h1:
@@ -100,6 +103,16 @@ def screen_pair(pair: dict, boosted_addresses: set = None, now_ms: float = None,
     if sells_5m > 0 and buys_5m / sells_5m > config.MAX_BUY_SELL_IMBALANCE:
         reasons.append(
             f"5m buy/sell ratio {buys_5m / sells_5m:.1f} looks like wash trading"
+        )
+    if buys_h1 >= 10 and sells_h1 == 0:
+        reasons.append(
+            f"{buys_h1} buys but ZERO sells in 1h — honeypot signature "
+            "(no evidence anyone can sell)"
+        )
+    elif sells_h1 > 0 and buys_h1 / sells_h1 > config.MAX_BUY_SELL_IMBALANCE:
+        reasons.append(
+            f"1h buy/sell ratio {buys_h1 / sells_h1:.1f} looks like wash "
+            "trading or throttled sells"
         )
 
     return (len(reasons) == 0, reasons)

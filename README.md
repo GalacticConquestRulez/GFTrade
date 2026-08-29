@@ -73,7 +73,14 @@ when something goes wrong.
   DexScreener for placement.
 - On-chain safety checks via Solana RPC: mint authority renounced
   ("contract renounced"), no freeze authority (the honeypot mechanic),
-  top-10 holder concentration (excluding the LP account).
+  top-10 holder concentration (excluding the LP account), and classic SPL
+  token program only — Token-2022 mints are rejected as known-risk, since
+  their extensions (transfer hooks/fees, permanent delegates) enable
+  sell-traps the authority checks can't see.
+- Sellability evidence in the market screens: a coin with real buy flow
+  and zero recorded sells is rejected as a honeypot signature — dry-run
+  "wins" on such coins would be fiction, since the sim can't know a sell
+  transaction would have failed on-chain.
 - LP lock check via RugCheck: at least `MIN_LP_LOCKED_PCT` (default 80%)
   of the pool's LP tokens must be locked or burned, so the deployer can't
   simply pull the liquidity. In strict mode (default) a token whose LP
