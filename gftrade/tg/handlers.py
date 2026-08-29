@@ -82,14 +82,23 @@ async def render_token_view(deps, mint: str):
     if pair is None:
         return None, None
     verdict = await deps.scanner.evaluate_pair(pair, set())
+    known_bad = verdict.get("risk_tier") == "risky"
+    header = None
+    if known_bad:
+        dangers = "\n".join(f"  · {fmt.esc(r)}"
+                            for r in fmt.risk_reasons(verdict["safety"]))
+        header = ("🚫 <b>KNOWN RISK — the scanner will never trade this</b>\n"
+                  f"{dangers}")
     text = fmt.token_card(
         pair, verdict["safety"], verdict["score"], verdict["breakdown"],
-        verdict["patterns"], extension_pct=verdict.get("extension_pct"),
+        verdict["patterns"], header=header,
+        extension_pct=verdict.get("extension_pct"),
     )
     if not verdict["screened_ok"]:
         shown = "\n".join(f"  · {fmt.esc(r)}" for r in verdict["reject_reasons"][:4])
         text += f"\n⚠️ <b>Scanner would reject this:</b>\n{shown}"
-    markup = kb.token_kb(mint, deps.store.settings["buy_presets"], pair.get("url"))
+    markup = kb.token_kb(mint, deps.store.settings["buy_presets"], pair.get("url"),
+                         known_bad=known_bad)
     return text, markup
 
 
@@ -152,7 +161,8 @@ def scan_page_view(deps, page: int):
     chunk = verdicts[page * SCAN_PAGE_SIZE:(page + 1) * SCAN_PAGE_SIZE]
     text = fmt.scan_page_text(verdicts, page, SCAN_PAGE_SIZE,
                               evaluated=cache.get("evaluated"),
-                              hidden_unsafe=hidden)
+                              hidden_unsafe=hidden,
+                              banned=cache.get("banned", 0))
     markup = kb.scan_page_kb(chunk, page, total_pages,
                              start_rank=page * SCAN_PAGE_SIZE + 1)
     return text, markup

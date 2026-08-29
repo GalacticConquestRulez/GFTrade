@@ -414,6 +414,7 @@ class Scanner:
         batch = batch[:EVAL_BATCH_PER_TICK]
         screened, near_misses = [], []
         evaluated = 0
+        banned = 0  # known-risky coins removed from view entirely
         if batch:
             pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID, batch)
             best_by_mint = {}
@@ -432,6 +433,9 @@ class Scanner:
             for mint, pair in best_by_mint.items():
                 verdict = await self.evaluate_pair(pair, boosted)
                 if verdict["screened_ok"]:
+                    if verdict["risk_tier"] == "risky":
+                        banned += 1  # unlocked LP / live authorities: never listed
+                        continue
                     screened.append(verdict)
                     continue
                 # Near-miss: keep unless it's simply too old for our window.
@@ -443,18 +447,36 @@ class Scanner:
                 )
                 near_misses.append(verdict)
 
-        # Sort: risk tier first (safe -> unverified -> risky), then pure
-        # market quality inside each tier — a risky coin with a hot chart
-        # can no longer sit shoulder-to-shoulder with a safe one.
-        tier_rank = {"safe": 0, "unverified": 1, "risky": 2}
+        # Sort: risk tier first (safe -> unverified), then pure market
+        # quality inside each tier. Known-risky coins were removed above —
+        # a hot chart is not a reason to show a coin whose deployer can
+        # pull the pool or print supply.
+        tier_rank = {"safe": 0, "unverified": 1}
         screened.sort(key=lambda v: (tier_rank.get(v.get("risk_tier"), 1),
                                      -v.get("market_score", v["score"])))
         near_misses.sort(key=lambda v: -v.get("market_score", v["score"]))
         verdicts = screened[:top_n]
         if len(verdicts) < self.SCAN_MIN_LIST:
-            verdicts += near_misses[:self.SCAN_MIN_LIST - len(verdicts)]
+            # Near-misses skipped safety during screening (no point paying
+            # for coins that failed market checks) — but nothing enters the
+            # visible list without proving it isn't known-bad. Check lazily,
+            # capped so a risky streak can't burn the API budget.
+            checked = 0
+            for verdict in near_misses:
+                if len(verdicts) >= self.SCAN_MIN_LIST or checked >= self.SCAN_MIN_LIST * 2:
+                    break
+                checked += 1
+                try:
+                    verdict["safety"] = await self.safety.check(verdict["mint"])
+                except Exception:
+                    verdict["safety"] = None
+                verdict["risk_tier"] = safety_mod.risk_tier(verdict["safety"])
+                if verdict["risk_tier"] == "risky":
+                    banned += 1
+                    continue
+                verdicts.append(verdict)
         self.last_scan = {"verdicts": verdicts, "at": time.time(),
-                          "evaluated": evaluated}
+                          "evaluated": evaluated, "banned": banned}
         return verdicts
 
     # ---------- the loop ----------

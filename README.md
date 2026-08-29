@@ -85,13 +85,18 @@ when something goes wrong.
   of the pool's LP tokens must be locked or burned, so the deployer can't
   simply pull the liquidity. In strict mode (default) a token whose LP
   status can't be verified is rejected — no lock proof, no trade.
-- `/scan` lists every candidate passing the market screens, paged 5 at a
-  time with ◀️ ▶️ arrows, sorted by risk tier first — 🟢 safe (everything
-  proven, LP lock included), then 🟡 unverified, then 🔴 risky — and by
-  **pure market-quality score** (no safety points) within each tier, so a
-  risky coin with a hot chart can't share a number with a safe one. Each
-  non-safe row carries the exact reason (🚫 LP 5%, 🚫 mint active,
-  ❓ unverified).
+- **Known-risky coins are never listed, period.** Any coin with a
+  known-bad check — unlocked LP, live mint or freeze authority,
+  Token-2022, whale-heavy holders — is banished from `/scan` entirely
+  (the header shows a 🛡 count of what was removed), can never alert or
+  autobuy, and even near-miss filler is safety-checked before it may
+  appear. Pasting such a mint manually still shows its card, but it
+  leads with the specific dangers and loses one-tap buy buttons — only
+  the typed-amount path remains.
+- `/scan` lists what's left, paged 5 at a time with ◀️ ▶️ arrows: 🟢 safe
+  coins (everything proven, LP lock included) first, then 🟡 unverified,
+  each tier sorted by **pure market-quality score** (no safety points) —
+  quality and risk are separate axes, never one blended number.
   By default only ✅ tokens alert; the `alert_unverified` setting extends
   alerts to ❓-only coins (nothing known-bad, some checks incomplete),
   clearly labeled for small manual flips. Known-bad (🚫) tokens never

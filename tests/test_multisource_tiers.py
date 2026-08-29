@@ -67,9 +67,10 @@ async def test_scan_sorts_by_tier_before_market_quality(store):
     scanner = Scanner(store, dex, TradingEngine(store, dex, dry_run=True),
                       TierSafety())
     verdicts = await scanner.scan_now()
-    assert [v["risk_tier"] for v in verdicts] == ["safe", "unverified", "risky"]
-    risk_verdict = verdicts[-1]
-    assert risk_verdict["market_score"] >= verdicts[0]["market_score"]
+    # the risky coin — despite the hottest chart — is banished, not ranked
+    assert [v["risk_tier"] for v in verdicts] == ["safe", "unverified"]
+    assert all(v["mint"] != mints["risk"] for v in verdicts)
+    assert scanner.last_scan["banned"] == 1
 
 
 # ---------- gecko pricing ----------
@@ -134,3 +135,71 @@ async def test_checkpoint_prices_prefer_gecko_and_backfill_from_dex(store):
     prices = await scanner._fetch_prices([MINT_A, "MISSING"])
     assert prices[MINT_A] == 0.002       # from gecko
     assert prices["MISSING"] == 0.5      # backfilled from dexscreener
+
+
+async def test_risky_near_misses_cannot_fill_the_list(store):
+    """Near-misses skip safety during screening, but nothing reaches the
+    visible list without proving it isn't known-bad — a thin market must
+    not become a backdoor for unlocked-LP coins."""
+    class RiskySafety:
+        async def check(self, mint):
+            return SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
+                                top10_pct=10.0, lp_locked_pct=2.0,
+                                standard_token=True)
+
+    # every coin fails the liquidity screen -> all are near-miss candidates
+    pairs = {f"NM{i:02d}" + "w" * 36: make_pair(mint=f"NM{i:02d}" + "w" * 36,
+                                                liquidity=4_000, market_cap=40_000)
+             for i in range(6)}
+    dex = FakeDex(pairs_by_mint=pairs,
+                  profiles=[{"chainId": "solana", "tokenAddress": m} for m in pairs])
+    scanner = Scanner(store, dex, TradingEngine(store, dex, dry_run=True),
+                      RiskySafety())
+    verdicts = await scanner.scan_now()
+    assert verdicts == []                       # nothing clean to show
+    assert scanner.last_scan["banned"] == 6     # and the shield says why
+
+
+async def test_clean_near_misses_still_fill(store):
+    pairs = {f"CL{i:02d}" + "w" * 36: make_pair(mint=f"CL{i:02d}" + "w" * 36,
+                                                liquidity=4_000, market_cap=40_000)
+             for i in range(4)}
+    dex = FakeDex(pairs_by_mint=pairs,
+                  profiles=[{"chainId": "solana", "tokenAddress": m} for m in pairs])
+    scanner = Scanner(store, dex, TradingEngine(store, dex, dry_run=True),
+                      FakeSafety())
+    verdicts = await scanner.scan_now()
+    assert len(verdicts) == 4
+    assert all(v["risk_tier"] != "risky" for v in verdicts)
+
+
+def test_known_bad_card_loses_one_tap_buys():
+    from gftrade.tg.keyboards import token_kb
+    safe_kb = token_kb(MINT_A, [0.1, 0.5], known_bad=False)
+    safe_callbacks = [b.callback_data for row in safe_kb.inline_keyboard for b in row]
+    assert any((c or "").startswith("b:") for c in safe_callbacks)
+
+    bad_kb = token_kb(MINT_A, [0.1, 0.5], known_bad=True)
+    bad_callbacks = [b.callback_data for row in bad_kb.inline_keyboard for b in row]
+    assert not any((c or "").startswith("b:") for c in bad_callbacks)  # no presets
+    assert any((c or "").startswith("bc:") for c in bad_callbacks)     # typed only
+
+
+def test_risk_reasons_are_specific():
+    from gftrade.tg import formatting as fmt
+    report = SafetyReport(mint="x", mint_renounced=False, freeze_none=True,
+                          top10_pct=10.0, lp_locked_pct=3.0, standard_token=True)
+    reasons = " | ".join(fmt.risk_reasons(report))
+    assert "print supply" in reasons
+    assert "pull the pool" in reasons
+    assert fmt.risk_reasons(GOOD_SAFETY) == []
+
+
+def test_banned_count_renders_in_header():
+    from gftrade.tg import formatting as fmt
+    from conftest import make_strong_pair as msp
+    verdict = {"pair": msp(), "mint": MINT_A, "score": 80, "market_score": 80,
+               "breakdown": {}, "patterns": [], "safety": GOOD_SAFETY,
+               "safety_ok": True, "screened_ok": True, "reject_reasons": []}
+    text = fmt.scan_page_text([verdict], 0, 5, evaluated=10, banned=3)
+    assert "🛡 3 known-risky removed" in text

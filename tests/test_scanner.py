@@ -144,16 +144,15 @@ def build_mixed_scanner(store):
     return Scanner(store, dex, engine, MixedSafety())
 
 
-async def test_scan_now_badges_unsafe_and_ranks_safe_first(store):
-    """The /scan list shows everything passing the MARKET screens, but
-    fully-safe tokens rank first and unsafe ones carry safety_ok=False so
-    the UI can badge them — browsing shows the field, money stays gated."""
+async def test_scan_now_banishes_known_risky_entirely(store):
+    """A coin with known-unlocked LP must never appear in the list at all —
+    not badged, not ranked, not as filler. The header count is the only
+    trace it existed."""
     scanner = build_mixed_scanner(store)
     verdicts = await scanner.scan_now()
-    assert [v["mint"] for v in verdicts] == [MINT_A, MINT_B]
-    assert verdicts[0]["safety_ok"] is True
-    assert verdicts[1]["safety_ok"] is False
-    assert verdicts[1]["safety"].lp_locked_pct == 3.0
+    assert [v["mint"] for v in verdicts] == [MINT_A]
+    assert verdicts[0]["risk_tier"] == "safe"
+    assert scanner.last_scan["banned"] == 1
 
 
 async def test_unsafe_token_never_alerts_or_autobuys(store):

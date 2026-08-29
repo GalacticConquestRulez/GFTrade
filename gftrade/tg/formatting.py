@@ -358,8 +358,29 @@ def _is_unverified(verdict: dict) -> bool:
     )
 
 
+def risk_reasons(report) -> list:
+    """Human-readable list of the KNOWN-BAD findings on a safety report."""
+    if report is None:
+        return []
+    reasons = []
+    if report.mint_renounced is False:
+        reasons.append("mint authority still active — deployer can print supply")
+    if report.freeze_none is False:
+        reasons.append("freeze authority active — deployer can block your sells")
+    if report.standard_token is False:
+        reasons.append("Token-2022 mint — sell-trap extensions possible")
+    if report.top10_pct is not None and report.top10_pct > config.MAX_TOP10_HOLDER_PCT:
+        reasons.append(f"top-10 wallets hold {report.top10_pct:.0f}% of supply")
+    if config.LP_CHECK_ENABLED and report.lp_locked_pct is not None \
+            and report.lp_locked_pct < config.MIN_LP_LOCKED_PCT:
+        reasons.append(f"only {report.lp_locked_pct:.0f}% of liquidity locked — "
+                       "deployer can pull the pool")
+    return reasons
+
+
 def scan_page_text(verdicts: list, page: int, page_size: int,
-                   evaluated: int = None, hidden_unsafe: int = 0) -> str:
+                   evaluated: int = None, hidden_unsafe: int = 0,
+                   banned: int = 0) -> str:
     if not verdicts:
         if hidden_unsafe:
             return (
@@ -391,6 +412,9 @@ def scan_page_text(verdicts: list, page: int, page_size: int,
         f"✅ {safe_count} fully safe · {screened_count} pass screens · "
         f"only ✅ can be alerted or auto-bought",
     ]
+    if banned:
+        lines.append(f"🛡 {banned} known-risky removed — unlocked LP or live "
+                     "authorities are never listed")
     if hidden_unsafe:
         lines.append(f"🔒 Safe-only view — {hidden_unsafe} non-✅ hidden "
                      "(toggle in /settings)")
@@ -409,8 +433,8 @@ def scan_page_text(verdicts: list, page: int, page_size: int,
             "safe. A free Helius/QuickNode RPC usually fixes this.</i>"
         )
     lines.append("")
-    lines.insert(2, "<i>Sorted: 🟢 safe → 🟡 unverified → 🔴 risky, best "
-                    "market quality first within each.</i>")
+    lines.insert(2, "<i>Sorted: 🟢 safe first, then 🟡 unverified · "
+                    "known-risky coins are never listed.</i>")
     for offset, verdict in enumerate(verdicts[start:start + page_size]):
         pair = verdict["pair"]
         base = pair.get("baseToken") or {}
@@ -443,7 +467,7 @@ def settings_text(settings: dict, dry_run: bool) -> str:
            if settings.get('autobuy_min_age_minutes') else ""),
         f"🚨 Alert min score: {settings['min_alert_score']}",
         f"❓ Unverified alerts: {'ON — flip-size only, known-bad still never alerts' if settings.get('alert_unverified') else 'off (only fully-✅ coins alert)'}",
-        f"🔒 /scan shows: {'✅-only (non-safe hidden)' if settings.get('scan_safe_only') else 'everything, badged (only ✅ can alert/autobuy)'}",
+        f"🔒 /scan shows: {'✅-only (unverified hidden too)' if settings.get('scan_safe_only') else 'safe + unverified, badged'} · known-risky never listed",
         f"🛡 Security checks: {'strict (unknown = reject)' if settings['security_strict'] else 'lenient (unknown = allow)'}",
         "",
         f"💰 Buy presets: {presets} SOL",

@@ -29,16 +29,27 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 
 
 def token_kb(mint: str, presets: list, pair_url: str = None,
-             include_mute: bool = False) -> InlineKeyboardMarkup:
-    buy_row = [
-        InlineKeyboardButton(f"Buy {amount:g} SOL", callback_data=f"b:{mint}:{amount:g}")
-        for amount in presets[:3]
-    ]
-    action_row = [
-        InlineKeyboardButton("Buy X…", callback_data=f"bc:{mint}"),
-        InlineKeyboardButton("🔄 Refresh", callback_data=f"r:{mint}"),
-    ]
-    rows = [buy_row, action_row]
+             include_mute: bool = False,
+             known_bad: bool = False) -> InlineKeyboardMarkup:
+    if known_bad:
+        # Known-risky coin (unlocked LP, live authorities, ...): no one-tap
+        # buys. The typed-amount path stays so the owners keep final say,
+        # but buying this should never be a single reflex tap.
+        rows = [[
+            InlineKeyboardButton("⚠️ Buy anyway (type amount)…",
+                                 callback_data=f"bc:{mint}"),
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"r:{mint}"),
+        ]]
+    else:
+        buy_row = [
+            InlineKeyboardButton(f"Buy {amount:g} SOL", callback_data=f"b:{mint}:{amount:g}")
+            for amount in presets[:3]
+        ]
+        action_row = [
+            InlineKeyboardButton("Buy X…", callback_data=f"bc:{mint}"),
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"r:{mint}"),
+        ]
+        rows = [buy_row, action_row]
     link_row = []
     if pair_url:
         link_row.append(InlineKeyboardButton("📈 Chart", url=pair_url))
