@@ -82,8 +82,10 @@ when something goes wrong.
   time with ◀️ ▶️ arrows: fully-safe tokens (✅ renounced, no freeze,
   holder-sane, LP locked) rank first by score, the rest follow with a
   badge saying exactly why not (🚫 LP 5%, 🚫 mint active, ❓ unverified).
-  Only ✅ tokens can ever be alerted or auto-bought — the rest are
-  browse-only context.
+  By default only ✅ tokens alert; the `alert_unverified` setting extends
+  alerts to ❓-only coins (nothing known-bad, some checks incomplete),
+  clearly labeled for small manual flips. Known-bad (🚫) tokens never
+  alert, and autobuy only ever touches ✅.
 - Momentum/accumulation patterns + a weighted 0–100 composite score.
 - Signal cards with buy buttons; per-token mute; 24h re-alert cooldown.
 - Optional autobuy above a stricter score, with TP/SL/trailing management
