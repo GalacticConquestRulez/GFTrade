@@ -147,6 +147,54 @@ Wallet security, non-negotiable:
 
 ---
 
+## Running it on a server
+
+Exits (TP / stop-loss / trailing) only fire while the bot is running, so a
+server that keeps it alive — through SSH disconnects and reboots — is the
+right home for it.
+
+Fresh Ubuntu/Debian doesn't ship `pip`, and recent versions refuse
+system-wide installs (PEP 668) — use a virtualenv:
+
+```bash
+apt update && apt install -y python3-venv python3-pip
+cd ~/GFTrade
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env   # then edit .env, and: chmod 600 .env
+.venv/bin/python main.py   # foreground test first
+```
+
+Then run it under systemd so it restarts on failure and comes back after
+reboots (adjust paths if you didn't clone to /root/GFTrade):
+
+```ini
+# /etc/systemd/system/gftrade.service
+[Unit]
+Description=GFTrade Telegram trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/root/GFTrade
+ExecStart=/root/GFTrade/.venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload
+systemctl enable --now gftrade
+journalctl -u gftrade -f     # live logs
+```
+
+The bot messages every authorized user on startup, so you'll know each
+time it comes back. `systemctl stop gftrade` before editing config; if
+you'll keep it stopped for long in live mode, close positions first.
+
 ## Commands
 
 | Command | What it does |
