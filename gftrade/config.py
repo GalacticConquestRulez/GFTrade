@@ -80,7 +80,14 @@ WALLET_KEYFILE = os.getenv("WALLET_KEYFILE", "wallet.json")
 STATE_FILE = os.getenv("STATE_FILE", "state.json")
 
 # --- Scanner cadence ---
+# Discovery (feeds + screening + scoring) runs every SCAN_INTERVAL_SECONDS.
+# Open-position exits (TP/SL/trailing/runner) are checked far more often —
+# with 90s checks a -10% stop on a fast coin routinely fills at -15%,
+# because price falls straight through the level between looks. Exit checks
+# cost one batched DexScreener call each, so a 20s cadence stays well under
+# rate limits.
 SCAN_INTERVAL_SECONDS = _env_int("SCAN_INTERVAL_SECONDS", 90)
+EXIT_CHECK_INTERVAL_SECONDS = _env_int("EXIT_CHECK_INTERVAL_SECONDS", 20)
 
 # --- Hard screening thresholds (discovery/filters.py) ---
 # None of these are research-backed magic numbers — they're sane starting
@@ -143,6 +150,13 @@ DEFAULT_SETTINGS = {
     "min_autobuy_score": 82,     # stricter bar before money moves on its own
     "max_positions": 3,
     "security_strict": True,     # True: unknown/failed on-chain safety checks reject a token
+    # Also alert on screened coins whose safety is merely UNVERIFIED (❓) —
+    # for manual small-size flips. Coins with a KNOWN-BAD check (freeze
+    # authority on, mint authority live, verified-unlocked LP, whale-heavy
+    # holders) never alert regardless: honeypots specifically farm
+    # flippers, and one of them erases ten winning flips. Autobuy ignores
+    # this flag entirely — money only moves itself on fully-✅ coins.
+    "alert_unverified": False,
     # Market-screen thresholds, editable from /settings so tuning them
     # doesn't need a server edit + restart. These override the constants
     # above at runtime; the constants remain the documented defaults.

@@ -103,19 +103,31 @@ class Scanner:
         return verdict
 
     def _qualifies(self, verdict: dict) -> bool:
-        """Gate for alerts and autobuy — money and pings stay strictly
-        limited to fully-safe tokens, whatever the /scan list displays."""
+        """Alert gate. Fully-safe (✅) coins always qualify on pattern+score.
+        With alert_unverified on, ❓-only coins (no check known-bad, some
+        unverifiable) qualify too — for manual flips. Known-bad coins never
+        alert. Autobuy applies its own stricter ✅-only check on top."""
         settings = self.store.settings
+        safety = verdict["safety"]
+        safety_acceptable = verdict["safety_ok"] or (
+            settings.get("alert_unverified")
+            and safety is not None
+            and safety.passes(strict=False)  # lenient = nothing known-bad
+        )
         return (
             verdict["screened_ok"]
-            and verdict["safety_ok"]
+            and safety_acceptable
             and verdict["patterns"]
             and verdict["score"] >= settings["min_alert_score"]
         )
 
     # ---------- the tick ----------
 
-    async def tick(self) -> list:
+    async def tick(self, discover: bool = True) -> list:
+        """One pass. Exits are checked on EVERY tick; discovery and the
+        signal-log bookkeeping only when `discover` is set — run_forever
+        calls this on the fast exit cadence and flips `discover` on at the
+        slower scan interval."""
         events = []
         stats = {"profiles_new": 0, "pool": 0, "checked": 0, "passed_screen": 0,
                  "signals": 0}
@@ -126,6 +138,9 @@ class Scanner:
         except Exception as exc:
             logger.exception("exit check failed")
             events.append({"type": "scan_error", "where": "check_exits", "error": str(exc)})
+
+        if not discover:
+            return events
 
         settings = self.store.settings
         if settings["scanner_on"]:
@@ -222,6 +237,7 @@ class Scanner:
 
             can_autobuy = (
                 settings["autobuy"]
+                and verdict["safety_ok"]  # autobuy never touches ❓ coins
                 and verdict["score"] >= settings["min_autobuy_score"]
                 and len(self.store.positions) < settings["max_positions"]
             )
@@ -371,19 +387,27 @@ class Scanner:
 
     async def run_forever(self, publish) -> None:
         """`publish` is an async callable(list[event]) that renders events
-        into Telegram. Individual tick failures are logged and survived —
-        the loop only exits on cancellation."""
+        into Telegram. Runs on the fast exit cadence; discovery piggybacks
+        every SCAN_INTERVAL_SECONDS. Individual tick failures are logged
+        and survived — the loop only exits on cancellation."""
+        exit_interval = max(5, min(config.EXIT_CHECK_INTERVAL_SECONDS,
+                                   config.SCAN_INTERVAL_SECONDS))
         logger.info(
-            "scanner loop starting (interval %ss, dry_run=%s)",
-            config.SCAN_INTERVAL_SECONDS, self.engine.dry_run,
+            "scanner loop starting (discovery every %ss, exit checks every %ss, "
+            "dry_run=%s)",
+            config.SCAN_INTERVAL_SECONDS, exit_interval, self.engine.dry_run,
         )
+        last_discovery = 0.0
         while True:
             try:
-                events = await self.tick()
+                discover = (time.time() - last_discovery) >= config.SCAN_INTERVAL_SECONDS
+                events = await self.tick(discover=discover)
+                if discover:
+                    last_discovery = time.time()
                 if events:
                     await publish(events)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("scanner tick crashed; continuing")
-            await asyncio.sleep(config.SCAN_INTERVAL_SECONDS)
+            await asyncio.sleep(exit_interval)

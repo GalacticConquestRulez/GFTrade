@@ -19,6 +19,7 @@ def test_signal_and_receipt_cards_render():
     verdict = {
         "pair": make_strong_pair(), "mint": MINT_A, "score": 85,
         "breakdown": {"momentum": 20.0, "volume": 15.0}, "safety": GOOD_SAFETY,
+        "safety_ok": True,
         "patterns": [{"pattern": "volume_surge", "confidence": 0.8}],
         "screened_ok": True, "reject_reasons": [],
     }

@@ -110,9 +110,15 @@ def token_card(pair: dict, safety=None, score=None, breakdown=None,
 
 
 def signal_card(verdict: dict) -> str:
+    if verdict.get("safety_ok"):
+        header = "🚨 <b>New signal</b>"
+    else:
+        header = ("🚨 <b>Signal — ❓ UNVERIFIED</b>\n"
+                  "<i>Some safety checks couldn't be completed. Nothing is "
+                  "known-bad, but treat this as flip-size only.</i>")
     return token_card(
         verdict["pair"], verdict["safety"], verdict["score"], verdict["breakdown"],
-        verdict["patterns"], header="🚨 <b>New signal</b>",
+        verdict["patterns"], header=header,
     )
 
 
@@ -410,6 +416,7 @@ def settings_text(settings: dict, dry_run: bool) -> str:
         f"🤖 Autobuy: {'ON' if settings['autobuy'] else 'off'}"
         f" · {settings['autobuy_sol']:g} SOL/entry · min score {settings['min_autobuy_score']}",
         f"🚨 Alert min score: {settings['min_alert_score']}",
+        f"❓ Unverified alerts: {'ON — flip-size only, known-bad still never alerts' if settings.get('alert_unverified') else 'off (only fully-✅ coins alert)'}",
         f"🛡 Security checks: {'strict (unknown = reject)' if settings['security_strict'] else 'lenient (unknown = allow)'}",
         "",
         f"💰 Buy presets: {presets} SOL",
