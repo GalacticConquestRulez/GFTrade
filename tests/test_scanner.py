@@ -120,29 +120,51 @@ async def test_pool_capped(store):
     assert len(scanner.pool) <= config.CANDIDATE_POOL_MAX
 
 
-async def test_scan_now_excludes_unsafe_tokens(store):
-    """The /scan list must only contain fully-passing tokens — a token with
-    unlocked LP (or any failed safety check) never appears, even if it
-    screens fine on market data."""
-    from gftrade.discovery.safety import SafetyReport
+class MixedSafety:
+    """Good verdict for MINT_A, unlocked LP for MINT_B."""
 
-    class MixedSafety:
-        async def check(self, mint):
-            if mint == MINT_B:
-                return SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
-                                    top10_pct=10.0, lp_locked_pct=3.0)  # unlocked LP
+    async def check(self, mint):
+        from gftrade.discovery.safety import SafetyReport
+        if mint == MINT_B:
             return SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
-                                top10_pct=10.0, lp_locked_pct=100.0)
+                                top10_pct=10.0, lp_locked_pct=3.0)  # unlocked LP
+        return SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
+                            top10_pct=10.0, lp_locked_pct=100.0)
 
+
+def build_mixed_scanner(store):
     dex = FakeDex(
         pairs_by_mint={MINT_A: make_strong_pair(),
                        MINT_B: make_strong_pair(mint=MINT_B, symbol="RUGGY")},
         profiles=[{"chainId": "solana", "tokenAddress": m} for m in (MINT_A, MINT_B)],
     )
     engine = TradingEngine(store, dex, dry_run=True)
-    scanner = Scanner(store, dex, engine, MixedSafety())
+    return Scanner(store, dex, engine, MixedSafety())
+
+
+async def test_scan_now_badges_unsafe_and_ranks_safe_first(store):
+    """The /scan list shows everything passing the MARKET screens, but
+    fully-safe tokens rank first and unsafe ones carry safety_ok=False so
+    the UI can badge them — browsing shows the field, money stays gated."""
+    scanner = build_mixed_scanner(store)
     verdicts = await scanner.scan_now()
-    assert [v["mint"] for v in verdicts] == [MINT_A]
+    assert [v["mint"] for v in verdicts] == [MINT_A, MINT_B]
+    assert verdicts[0]["safety_ok"] is True
+    assert verdicts[1]["safety_ok"] is False
+    assert verdicts[1]["safety"].lp_locked_pct == 3.0
+
+
+async def test_unsafe_token_never_alerts_or_autobuys(store):
+    """Alerts and autobuy stay strictly limited to fully-safe tokens even
+    though the /scan list displays the rest."""
+    store.set_setting("autobuy", True)
+    scanner = build_mixed_scanner(store)
+    events = await scanner.tick()
+    signal_mints = [e["verdict"]["mint"] for e in events
+                    if e["type"] in ("signal", "autobuy")]
+    assert MINT_B not in signal_mints  # unlocked LP: never alerted, never bought
+    assert store.get_position(MINT_B) is None
+    assert store.get_position(MINT_A) is not None  # the clean one was autobought
 
 
 async def test_scan_now_caches_results_for_paging(store):

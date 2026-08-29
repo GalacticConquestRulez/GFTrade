@@ -247,28 +247,67 @@ def trades_text(summary: dict, last_trades: list, dry_run: bool) -> str:
     return "\n".join(lines)
 
 
+def safety_flag(verdict: dict) -> str:
+    """Compact per-row safety verdict for the /scan list: ✅ proven safe,
+    🚫 with the first known-bad reason, ❓ when it couldn't be verified."""
+    if verdict.get("safety_ok"):
+        return "✅"
+    report = verdict.get("safety")
+    if report is None:
+        return "🚫"
+    if report.mint_renounced is False:
+        return "🚫 mint active"
+    if report.freeze_none is False:
+        return "🚫 freeze on"
+    if report.top10_pct is not None and report.top10_pct > config.MAX_TOP10_HOLDER_PCT:
+        return f"🚫 top10 {report.top10_pct:.0f}%"
+    if config.LP_CHECK_ENABLED and report.lp_locked_pct is not None \
+            and report.lp_locked_pct < config.MIN_LP_LOCKED_PCT:
+        return f"🚫 LP {report.lp_locked_pct:.0f}%"
+    return "❓ unverified"
+
+
+def _is_unverified(verdict: dict) -> bool:
+    report = verdict.get("safety")
+    if report is None:
+        return True
+    return bool(report.error) or (
+        config.LP_CHECK_ENABLED and report.lp_locked_pct is None
+    )
+
+
 def scan_page_text(verdicts: list, page: int, page_size: int) -> str:
     if not verdicts:
         return (
-            "Scan finished: nothing currently passes the screens + safety "
-            "checks (renounced mint, no freeze, sane holders, LP locked).\n"
-            "That's normal — most of the time nothing qualifies. The "
-            "background scanner keeps watching and will alert you."
+            "Scan finished: nothing currently passes the market screens "
+            "(age window, liquidity, volume, organic activity).\n"
+            "That's normal in quiet stretches — the background scanner "
+            "keeps watching and will alert you when something qualifies."
         )
     total_pages = (len(verdicts) + page_size - 1) // page_size
     start = page * page_size
+    safe_count = sum(1 for v in verdicts if v.get("safety_ok"))
+    unverified = sum(1 for v in verdicts if not v.get("safety_ok") and _is_unverified(v))
     lines = [
-        f"<b>Best candidates right now</b> — {len(verdicts)} found, "
+        f"<b>Best candidates right now</b> — {len(verdicts)} screened, "
         f"page {page + 1}/{total_pages}",
-        "<i>All are renounced, freeze-free, holder-sane, LP-locked.</i>",
-        "",
+        f"✅ {safe_count} pass every safety check · only those can be "
+        "alerted or auto-bought",
     ]
+    if unverified >= 3 and unverified * 2 >= len(verdicts):
+        lines.append(
+            "⚠️ <i>Safety data unavailable for most (❓) — your RPC or "
+            "RugCheck is likely rate-limiting. ❓ means unverified, not "
+            "safe. A free Helius/QuickNode RPC usually fixes this.</i>"
+        )
+    lines.append("")
     for offset, verdict in enumerate(verdicts[start:start + page_size]):
         pair = verdict["pair"]
         base = pair.get("baseToken") or {}
         pattern = verdict["patterns"][0]["pattern"] if verdict["patterns"] else "no pattern"
         lines.append(
-            f"<b>#{start + offset + 1} {esc(base.get('symbol') or '?')}</b> — "
+            f"{safety_flag(verdict)} <b>#{start + offset + 1} "
+            f"{esc(base.get('symbol') or '?')}</b> — "
             f"{verdict['score']}/100 · {esc(pattern)}\n"
             f"    liq {fmt_usd((pair.get('liquidity') or {}).get('usd'))} · "
             f"MC {fmt_usd(pair.get('marketCap') or pair.get('fdv'))} · "

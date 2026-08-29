@@ -73,8 +73,9 @@ def scan_page_kb(page_verdicts: list, page: int, total_pages: int,
     rows = []
     for offset, verdict in enumerate(page_verdicts):
         base = verdict["pair"].get("baseToken") or {}
-        label = (f"#{start_rank + offset} {(base.get('symbol') or '?')[:12]} · "
-                 f"{verdict['score']}/100")
+        badge = "✅" if verdict.get("safety_ok") else "⚠️"
+        label = (f"{badge} #{start_rank + offset} "
+                 f"{(base.get('symbol') or '?')[:12]} · {verdict['score']}/100")
         rows.append([InlineKeyboardButton(label, callback_data=f"r:{base.get('address')}")])
     nav = []
     if page > 0:

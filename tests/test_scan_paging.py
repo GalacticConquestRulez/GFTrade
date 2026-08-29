@@ -7,7 +7,7 @@ from gftrade.tg.handlers import SCAN_PAGE_SIZE, scan_page_view
 from conftest import make_pair
 
 
-def make_verdicts(count):
+def make_verdicts(count, safety_ok=True, safety=None):
     verdicts = []
     for i in range(count):
         mint = chr(ord("C") + i) * 40 + "zzzz"
@@ -15,7 +15,8 @@ def make_verdicts(count):
         verdicts.append({
             "pair": pair, "mint": mint, "score": 95 - i, "breakdown": {},
             "patterns": [{"pattern": "volume_surge", "confidence": 0.7}],
-            "safety": None, "screened_ok": True, "reject_reasons": [],
+            "safety": safety, "safety_ok": safety_ok,
+            "screened_ok": True, "reject_reasons": [],
         })
     return verdicts
 
@@ -77,3 +78,60 @@ def test_empty_scan_renders_explanation_with_rescan():
     callbacks = [b.callback_data for b in buttons_of(markup)]
     assert "scan" in callbacks  # re-scan stays available
     assert not any((c or "").startswith("scp:") for c in callbacks)
+
+
+def test_safety_flag_states():
+    from gftrade.discovery.safety import SafetyReport
+    from gftrade.tg import formatting as fmt
+
+    assert fmt.safety_flag({"safety_ok": True}) == "✅"
+    assert "mint active" in fmt.safety_flag(
+        {"safety_ok": False, "safety": SafetyReport(mint="x", mint_renounced=False)})
+    assert "freeze on" in fmt.safety_flag(
+        {"safety_ok": False,
+         "safety": SafetyReport(mint="x", mint_renounced=True, freeze_none=False)})
+    assert "top10 55%" in fmt.safety_flag(
+        {"safety_ok": False,
+         "safety": SafetyReport(mint="x", mint_renounced=True, freeze_none=True,
+                                top10_pct=55.0, lp_locked_pct=100.0)})
+    assert "LP 5%" in fmt.safety_flag(
+        {"safety_ok": False,
+         "safety": SafetyReport(mint="x", mint_renounced=True, freeze_none=True,
+                                top10_pct=10.0, lp_locked_pct=5.0)})
+    assert "unverified" in fmt.safety_flag(
+        {"safety_ok": False,
+         "safety": SafetyReport(mint="x", mint_renounced=True, freeze_none=True,
+                                top10_pct=10.0, lp_locked_pct=None)})
+
+
+def test_header_counts_and_unverified_warning():
+    from gftrade.discovery.safety import SafetyReport
+
+    # mostly-unverified list -> warning shown, ❓ rows badged
+    unverified = SafetyReport(mint="x", mint_renounced=True, freeze_none=True,
+                              top10_pct=10.0, lp_locked_pct=None)
+    deps = deps_with(make_verdicts(6, safety_ok=False, safety=unverified))
+    text, _ = scan_page_view(deps, 0)
+    assert "✅ 0 pass every safety check" in text
+    assert "rate-limiting" in text
+    assert "❓ unverified" in text
+
+    # fully-verified list -> no warning
+    deps = deps_with(make_verdicts(6, safety_ok=True))
+    text, _ = scan_page_view(deps, 0)
+    assert "✅ 6 pass every safety check" in text
+    assert "rate-limiting" not in text
+
+
+def test_badges_on_view_buttons():
+    deps = deps_with(make_verdicts(3, safety_ok=False,
+                                   safety=None))
+    _, markup = scan_page_view(deps, 0)
+    labels = [b.text for b in buttons_of(markup)
+              if (b.callback_data or "").startswith("r:")]
+    assert all(l.startswith("⚠️") for l in labels)
+    deps = deps_with(make_verdicts(3, safety_ok=True))
+    _, markup = scan_page_view(deps, 0)
+    labels = [b.text for b in buttons_of(markup)
+              if (b.callback_data or "").startswith("r:")]
+    assert all(l.startswith("✅") for l in labels)

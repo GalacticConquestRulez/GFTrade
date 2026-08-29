@@ -20,6 +20,7 @@ on expiry, and none of this sees off-chain coordination. `security_strict`
 (settings) decides what happens when a check can't complete: strict
 rejects unknowns, lenient passes them with the ❓ displayed.
 """
+import asyncio
 import time
 from dataclasses import dataclass
 
@@ -78,16 +79,27 @@ class SafetyReport:
 
 
 class SafetyChecker:
+    # Seconds between uncached checks. Each check is 2 RPC calls; free/public
+    # RPCs rate-limit hard, and a 429 shows up to the user as ❓ unverified —
+    # spacing the calls keeps the data flowing on modest infrastructure.
+    MIN_CHECK_INTERVAL = 0.4
+
     def __init__(self, rpc, rugcheck=None, cache_ttl: int = None):
         self._rpc = rpc
         self._rugcheck = rugcheck
         self._ttl = cache_ttl or config.SAFETY_CACHE_TTL_SECONDS
         self._cache = {}  # mint -> (SafetyReport, fetched_at, ttl)
+        self._last_check_at = 0.0
 
     async def check(self, mint: str) -> SafetyReport:
         cached = self._cache.get(mint)
         if cached and time.time() - cached[1] < cached[2]:
             return cached[0]
+
+        wait = self.MIN_CHECK_INTERVAL - (time.time() - self._last_check_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        self._last_check_at = time.time()
 
         report = SafetyReport(mint=mint)
         try:

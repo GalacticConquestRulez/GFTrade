@@ -74,9 +74,12 @@ when something goes wrong.
   of the pool's LP tokens must be locked or burned, so the deployer can't
   simply pull the liquidity. In strict mode (default) a token whose LP
   status can't be verified is rejected — no lock proof, no trade.
-- `/scan` returns every fully-passing candidate (renounced + LP locked +
-  the rest), best score first, paged 5 at a time with ◀️ ▶️ arrows and a
-  per-token view button.
+- `/scan` lists every candidate passing the market screens, paged 5 at a
+  time with ◀️ ▶️ arrows: fully-safe tokens (✅ renounced, no freeze,
+  holder-sane, LP locked) rank first by score, the rest follow with a
+  badge saying exactly why not (🚫 LP 5%, 🚫 mint active, ❓ unverified).
+  Only ✅ tokens can ever be alerted or auto-bought — the rest are
+  browse-only context.
 - Momentum/accumulation patterns + a weighted 0–100 composite score.
 - Signal cards with buy buttons; per-token mute; 24h re-alert cooldown.
 - Optional autobuy above a stricter score, with TP/SL/trailing management
@@ -207,7 +210,7 @@ you'll keep it stopped for long in live mode, close positions first.
 | Command | What it does |
 |---|---|
 | `/start` | Main menu: mode, scanner status, positions/PnL summary |
-| `/scan` | Sweep now; every fully-passing candidate, best first, paged with ◀️ ▶️ |
+| `/scan` | Sweep now; ranked + safety-badged candidate list, paged with ◀️ ▶️ |
 | `/buy <mint> [SOL]` | Token card — or instant buy when an amount is given |
 | *(paste a mint)* | Same as `/buy <mint>` |
 | `/positions` (`/sell`) | Open positions, live PnL, sell buttons |

@@ -77,6 +77,7 @@ class Scanner:
             "screened_ok": ok,
             "reject_reasons": reasons,
             "safety": None,
+            "safety_ok": False,   # all safety checks proven good (strict-aware)
             "patterns": [],
             "score": 0,
             "breakdown": {},
@@ -85,6 +86,7 @@ class Scanner:
             return verdict
         strict = self.store.settings["security_strict"]
         verdict["safety"] = await self.safety.check(verdict["mint"])
+        verdict["safety_ok"] = verdict["safety"].passes(strict)
         verdict["patterns"] = patterns.scan(pair)
         verdict["score"], verdict["breakdown"] = scoring.score_pair(
             pair, verdict["safety"], strict
@@ -92,13 +94,14 @@ class Scanner:
         return verdict
 
     def _qualifies(self, verdict: dict) -> bool:
+        """Gate for alerts and autobuy — money and pings stay strictly
+        limited to fully-safe tokens, whatever the /scan list displays."""
         settings = self.store.settings
         return (
             verdict["screened_ok"]
+            and verdict["safety_ok"]
             and verdict["patterns"]
             and verdict["score"] >= settings["min_alert_score"]
-            and verdict["safety"] is not None
-            and verdict["safety"].passes(settings["security_strict"])
         )
 
     # ---------- the tick ----------
@@ -207,12 +210,13 @@ class Scanner:
 
     async def scan_now(self, top_n: int = 30) -> list:
         """One synchronous sweep for the /scan command: refresh the pool,
-        evaluate everything, and return ranked verdicts (best score first)
-        that pass BOTH the hard screens and the safety checks — every entry
-        shown is renounced, unfrozen, holder-sane, and LP-locked (per
-        config). Listed even below the alert score threshold, so you can
-        see the full field the scanner is weighing. Results are cached on
-        self.last_scan for the paged Telegram view."""
+        evaluate everything, and return every candidate that passes the
+        MARKET screens, ranked for browsing: fully-safe tokens (renounced,
+        unfrozen, holder-sane, LP-locked) first by score, then the rest by
+        score with their safety verdicts attached so the UI can badge WHY
+        each one falls short (or couldn't be verified). Alerts and autobuy
+        never touch the non-✅ ones — this list is for eyes, not money.
+        Results are cached on self.last_scan for the paged Telegram view."""
         profiles = await self.dex.token_profiles_latest()
         self._absorb_profiles(profiles)
         boosted = set()
@@ -234,15 +238,12 @@ class Scanner:
                 if current is None or liq > ((current.get("liquidity") or {}).get("usd") or 0):
                     best_by_mint[mint] = pair
 
-            strict = self.store.settings["security_strict"]
             for mint, pair in best_by_mint.items():
                 verdict = await self.evaluate_pair(pair, boosted)
                 if not verdict["screened_ok"]:
                     continue
-                if verdict["safety"] is None or not verdict["safety"].passes(strict):
-                    continue
                 verdicts.append(verdict)
-            verdicts.sort(key=lambda v: -v["score"])
+            verdicts.sort(key=lambda v: (not v["safety_ok"], -v["score"]))
             verdicts = verdicts[:top_n]
         self.last_scan = {"verdicts": verdicts, "at": time.time()}
         return verdicts
