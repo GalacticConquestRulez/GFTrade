@@ -289,6 +289,12 @@ it (0 disables the delay) lets alerts and autobuy reach coins minutes
 after launch — autobuy still demands every safety check pass, but
 younger means less history for every heuristic to chew on.
 
+Age is a two-dial system: the global min age gates screening/alerts,
+and `autobuy_min_age_minutes` (also in `/settings`, 0 = no extra wait)
+adds a separate, usually higher bar before the bot's own buying acts —
+so alerts can fire at 5 minutes for manual flip decisions while autobuy
+waits until a coin has survived to 15–20.
+
 The remaining constants live in `config.py` (server edit + restart):
 
 - `MIN/MAX_LIQ_TO_MCAP_RATIO` — the manipulation-sanity core of the system

@@ -416,7 +416,9 @@ def settings_text(settings: dict, dry_run: bool) -> str:
         "",
         f"🔎 Scanner: {'on' if settings['scanner_on'] else 'off'}",
         f"🤖 Autobuy: {'ON' if settings['autobuy'] else 'off'}"
-        f" · {settings['autobuy_sol']:g} SOL/entry · min score {settings['min_autobuy_score']}",
+        f" · {settings['autobuy_sol']:g} SOL/entry · min score {settings['min_autobuy_score']}"
+        + (f" · min age {settings.get('autobuy_min_age_minutes', 0):g}m"
+           if settings.get('autobuy_min_age_minutes') else ""),
         f"🚨 Alert min score: {settings['min_alert_score']}",
         f"❓ Unverified alerts: {'ON — flip-size only, known-bad still never alerts' if settings.get('alert_unverified') else 'off (only fully-✅ coins alert)'}",
         f"🛡 Security checks: {'strict (unknown = reject)' if settings['security_strict'] else 'lenient (unknown = allow)'}",

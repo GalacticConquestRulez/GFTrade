@@ -239,6 +239,7 @@ class Scanner:
                 settings["autobuy"]
                 and verdict["safety_ok"]  # autobuy never touches ❓ coins
                 and verdict["score"] >= settings["min_autobuy_score"]
+                and age_hours * 60 >= (settings.get("autobuy_min_age_minutes") or 0)
                 and len(self.store.positions) < settings["max_positions"]
             )
             if can_autobuy:

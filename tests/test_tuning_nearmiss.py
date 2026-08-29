@@ -148,3 +148,50 @@ def test_min_age_parser_bounds():
     assert _parse_setting("min_pair_age_minutes", "10") == 10.0
     with pytest.raises(ValueError):
         _parse_setting("min_pair_age_minutes", "500")
+
+
+async def test_autobuy_min_age_splits_alerts_from_buying(store):
+    """The two-dial setup: alerts fire young for manual flips while
+    autobuy waits for the coin to survive its own minimum age."""
+    young = make_strong_pair(age_hours=0.15)  # 9 minutes old
+    dex = FakeDex(pairs_by_mint={MINT_A: young},
+                  profiles=[{"chainId": "solana", "tokenAddress": MINT_A}])
+    engine = TradingEngine(store, dex, dry_run=True)
+    scanner = Scanner(store, dex, engine, FakeSafety())
+    store.set_setting("autobuy", True)
+    store.set_setting("min_pair_age_minutes", 5.0)       # alerts from 5m
+    store.set_setting("autobuy_min_age_minutes", 15.0)   # bot waits to 15m
+
+    # 9 minutes old: alert only, no autobuy
+    events = await scanner.tick()
+    assert len([e for e in events if e["type"] == "signal"]) == 1
+    assert [e for e in events if e["type"] == "autobuy"] == []
+    assert store.positions == {}
+
+    # same coin at 20 minutes: alert cooldown suppresses a re-ping, but
+    # autobuy now clears its age gate and buys
+    dex.pairs_by_mint[MINT_A] = make_strong_pair(age_hours=0.34)
+    store.data["alerts"] = {}
+    store.save()
+    events = await scanner.tick()
+    assert len([e for e in events if e["type"] == "autobuy"]) == 1
+    assert store.get_position(MINT_A) is not None
+
+
+async def test_autobuy_min_age_zero_means_no_extra_wait(store):
+    young = make_strong_pair(age_hours=0.15)
+    dex = FakeDex(pairs_by_mint={MINT_A: young},
+                  profiles=[{"chainId": "solana", "tokenAddress": MINT_A}])
+    engine = TradingEngine(store, dex, dry_run=True)
+    scanner = Scanner(store, dex, engine, FakeSafety())
+    store.set_setting("autobuy", True)
+    store.set_setting("min_pair_age_minutes", 5.0)
+    events = await scanner.tick()  # autobuy_min_age default 0
+    assert len([e for e in events if e["type"] == "autobuy"]) == 1
+
+
+def test_autobuy_min_age_parser_bounds():
+    assert _parse_setting("autobuy_min_age_minutes", "0") == 0.0
+    assert _parse_setting("autobuy_min_age_minutes", "20") == 20.0
+    with pytest.raises(ValueError):
+        _parse_setting("autobuy_min_age_minutes", "999")

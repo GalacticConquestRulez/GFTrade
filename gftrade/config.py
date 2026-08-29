@@ -135,6 +135,11 @@ DEFAULT_SETTINGS = {
     "scanner_on": True,          # background discovery loop
     "autobuy": False,            # act on signals automatically (OFF until you trust the filters)
     "autobuy_sol": 0.05,         # size per auto entry
+    # Extra age gate for AUTOBUY only, in minutes. 0 = autobuy follows the
+    # global min_pair_age_minutes like everything else. Setting it higher
+    # lets alerts fire young (manual flip territory) while the bot's own
+    # buying waits for a coin to survive longer first.
+    "autobuy_min_age_minutes": 0.0,
     "buy_presets": [0.1, 0.5, 1.0],  # SOL amounts on quick-buy buttons
     "slippage_bps": 200,         # 2% — new pairs move; tighter values fail to fill
     "take_profit_pct": 35.0,

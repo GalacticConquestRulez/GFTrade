@@ -363,6 +363,12 @@ def _parse_setting(key: str, raw: str):
         if not 0 <= value <= 120:
             raise ValueError("Min pair age must be 0-120 minutes (0 = no delay).")
         return value
+    if key == "autobuy_min_age_minutes":
+        value = float(raw)
+        if not 0 <= value <= 240:
+            raise ValueError("Autobuy min age must be 0-240 minutes "
+                             "(0 = same as the global min age).")
+        return value
     raise ValueError("This setting can't be edited here.")
 
 
@@ -390,6 +396,10 @@ SETTING_PROMPTS = {
                             "can screen/alert/autobuy — 0 disables the delay. "
                             "⚠️ The first minutes are peak rug territory "
                             "(current: {v}m)",
+    "autobuy_min_age_minutes": "Send the minimum age in minutes before AUTOBUY "
+                               "may act — alerts still fire from the global min "
+                               "age, so you can flip young coins manually while "
+                               "the bot waits. 0 = no extra wait (current: {v}m)",
 }
 
 
