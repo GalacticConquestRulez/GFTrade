@@ -1,0 +1,14 @@
+# NEVER commit these — wallet.json is a plaintext private key
+wallet.json
+.env
+
+# runtime state
+state.json
+onchain_state.json
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/

@@ -1,0 +1,95 @@
+"""
+Hard screening: takes a raw DexScreener pair object and decides whether
+it's worth considering at all, BEFORE any scoring. This is the "ignore
+promoted, sanity-check liquidity vs market cap, demand organic activity"
+layer.
+
+None of these thresholds are magic numbers backed by research — they're
+reasonable starting points (config.py) to tune as you watch real results.
+"Manipulated vs organic" is a fuzzy, adversarial target that shifts as
+manipulators adapt; expect to revisit these.
+"""
+import time
+
+from .. import config
+
+
+def pair_age_hours(pair: dict, now_ms: float = None) -> float:
+    created_at_ms = pair.get("pairCreatedAt")
+    if not created_at_ms:
+        return -1.0
+    now_ms = now_ms if now_ms is not None else time.time() * 1000
+    return (now_ms - created_at_ms) / (1000 * 60 * 60)
+
+
+def screen_pair(pair: dict, boosted_addresses: set = None, now_ms: float = None) -> tuple:
+    """Returns (passed: bool, reasons: list[str]). `reasons` explains every
+    rejection (useful for logging/tuning) and is empty when passed."""
+    reasons = []
+    boosted_addresses = boosted_addresses or set()
+
+    chain_id = pair.get("chainId")
+    base_token = pair.get("baseToken") or {}
+    token_address = (base_token.get("address") or "").lower()
+
+    # 1. Exclude anything paying for promotion — both the boost feeds and
+    #    the per-pair boosts field (they don't always agree).
+    if config.EXCLUDE_BOOSTED:
+        actively_boosted = ((pair.get("boosts") or {}).get("active") or 0) > 0
+        if actively_boosted or (chain_id, token_address) in boosted_addresses:
+            reasons.append("boosted/promoted (paid placement)")
+
+    # 2. Quote token must be one we're willing to trade against
+    quote_symbol = (pair.get("quoteToken") or {}).get("symbol", "")
+    if quote_symbol not in config.QUOTE_TOKENS:
+        reasons.append(f"quote token {quote_symbol or '?'} not in {config.QUOTE_TOKENS}")
+
+    # 3. Age window: too new = peak rug/honeypot territory, too old = not
+    #    the "catch it early" game this bot plays.
+    age_h = pair_age_hours(pair, now_ms)
+    if age_h < 0:
+        reasons.append("no pair creation timestamp")
+    elif age_h * 60 < config.MIN_PAIR_AGE_MINUTES:
+        reasons.append(f"pair only {age_h * 60:.0f}m old, min {config.MIN_PAIR_AGE_MINUTES}m")
+    elif age_h > config.MAX_PAIR_AGE_HOURS:
+        reasons.append(f"pair age {age_h:.1f}h exceeds max {config.MAX_PAIR_AGE_HOURS}h")
+
+    # 4. Absolute liquidity floor
+    liquidity_usd = (pair.get("liquidity") or {}).get("usd") or 0
+    if liquidity_usd < config.MIN_LIQUIDITY_USD:
+        reasons.append(f"liquidity ${liquidity_usd:,.0f} below floor ${config.MIN_LIQUIDITY_USD:,}")
+
+    # 5. Liquidity-to-market-cap ratio — the core "is this manipulated"
+    #    heuristic. Very low: the cap isn't backed by real depth, one sell
+    #    crashes it (or it's low-float manipulation). Very high vs FDV:
+    #    often a wash-traded or freshly seeded pool.
+    market_cap = pair.get("marketCap") or pair.get("fdv") or 0
+    if market_cap > 0:
+        ratio = liquidity_usd / market_cap
+        if ratio < config.MIN_LIQ_TO_MCAP_RATIO:
+            reasons.append(f"liq/mcap {ratio:.3f} below min {config.MIN_LIQ_TO_MCAP_RATIO}")
+        elif ratio > config.MAX_LIQ_TO_MCAP_RATIO:
+            reasons.append(f"liq/mcap {ratio:.3f} above max {config.MAX_LIQ_TO_MCAP_RATIO}")
+    else:
+        reasons.append("no market cap data")
+
+    # 6. Volume floor — dead pools don't fill exits
+    volume_h1 = (pair.get("volume") or {}).get("h1") or 0
+    if volume_h1 < config.MIN_VOLUME_H1_USD:
+        reasons.append(f"1h volume ${volume_h1:,.0f} below floor ${config.MIN_VOLUME_H1_USD:,}")
+
+    # 7. Organic-activity checks on transaction counts
+    txns = pair.get("txns") or {}
+    buys_5m = (txns.get("m5") or {}).get("buys", 0)
+    sells_5m = (txns.get("m5") or {}).get("sells", 0)
+    buys_h1 = (txns.get("h1") or {}).get("buys", 0)
+    if buys_5m < config.MIN_BUYS_5M:
+        reasons.append(f"only {buys_5m} buys in 5m, floor {config.MIN_BUYS_5M}")
+    if buys_h1 < config.MIN_BUYS_H1:
+        reasons.append(f"only {buys_h1} buys in 1h, floor {config.MIN_BUYS_H1}")
+    if sells_5m > 0 and buys_5m / sells_5m > config.MAX_BUY_SELL_IMBALANCE:
+        reasons.append(
+            f"5m buy/sell ratio {buys_5m / sells_5m:.1f} looks like wash trading"
+        )
+
+    return (len(reasons) == 0, reasons)

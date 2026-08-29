@@ -1,0 +1,5 @@
+python-telegram-bot>=21.6
+httpx>=0.27
+solders>=0.21
+base58>=2.1.1
+python-dotenv>=1.0
