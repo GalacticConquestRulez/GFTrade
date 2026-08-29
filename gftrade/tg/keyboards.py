@@ -73,7 +73,12 @@ def scan_page_kb(page_verdicts: list, page: int, total_pages: int,
     rows = []
     for offset, verdict in enumerate(page_verdicts):
         base = verdict["pair"].get("baseToken") or {}
-        badge = "✅" if verdict.get("safety_ok") else "⚠️"
+        if not verdict.get("screened_ok", True):
+            badge = "🔻"
+        elif verdict.get("safety_ok"):
+            badge = "✅"
+        else:
+            badge = "⚠️"
         label = (f"{badge} #{start_rank + offset} "
                  f"{(base.get('symbol') or '?')[:12]} · {verdict['score']}/100")
         rows.append([InlineKeyboardButton(label, callback_data=f"r:{base.get('address')}")])
@@ -113,6 +118,10 @@ def settings_kb(settings: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("✏️ Autobuy SOL", callback_data="ste:autobuy_sol"),
          InlineKeyboardButton("✏️ Alert score", callback_data="ste:min_alert_score"),
          InlineKeyboardButton("✏️ Autobuy score", callback_data="ste:min_autobuy_score")],
+        [InlineKeyboardButton("✏️ Min liquidity $", callback_data="ste:min_liquidity_usd"),
+         InlineKeyboardButton("✏️ Min 1h volume $", callback_data="ste:min_volume_h1_usd")],
+        [InlineKeyboardButton("✏️ Min 1h buys", callback_data="ste:min_buys_h1"),
+         InlineKeyboardButton("✏️ Max age (hours)", callback_data="ste:max_pair_age_hours")],
         [InlineKeyboardButton("« Menu", callback_data="m")],
     ])
 

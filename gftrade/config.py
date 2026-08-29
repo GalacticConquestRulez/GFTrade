@@ -143,4 +143,11 @@ DEFAULT_SETTINGS = {
     "min_autobuy_score": 82,     # stricter bar before money moves on its own
     "max_positions": 3,
     "security_strict": True,     # True: unknown/failed on-chain safety checks reject a token
+    # Market-screen thresholds, editable from /settings so tuning them
+    # doesn't need a server edit + restart. These override the constants
+    # above at runtime; the constants remain the documented defaults.
+    "min_liquidity_usd": float(MIN_LIQUIDITY_USD),
+    "min_volume_h1_usd": float(MIN_VOLUME_H1_USD),
+    "min_buys_h1": MIN_BUYS_H1,
+    "max_pair_age_hours": float(MAX_PAIR_AGE_HOURS),
 }

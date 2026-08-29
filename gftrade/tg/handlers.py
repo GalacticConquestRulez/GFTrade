@@ -121,10 +121,12 @@ async def wallet_view(deps):
 
 
 def start_view(deps):
+    from .. import __version__
     text = fmt.start_text(
         deps.engine.dry_run, deps.store.summary(),
         deps.store.settings["scanner_on"], len(deps.scanner.pool),
-        deps.scanner.last_tick_at,
+        deps.scanner.last_tick_at, deps.scanner.last_tick_stats,
+        deps.scanner.feed_status, version=__version__,
     )
     return text, kb.main_menu_kb()
 
@@ -140,7 +142,8 @@ def scan_page_view(deps, page: int):
     total_pages = max(1, (len(verdicts) + SCAN_PAGE_SIZE - 1) // SCAN_PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
     chunk = verdicts[page * SCAN_PAGE_SIZE:(page + 1) * SCAN_PAGE_SIZE]
-    text = fmt.scan_page_text(verdicts, page, SCAN_PAGE_SIZE)
+    text = fmt.scan_page_text(verdicts, page, SCAN_PAGE_SIZE,
+                              evaluated=cache.get("evaluated"))
     markup = kb.scan_page_kb(chunk, page, total_pages,
                              start_rank=page * SCAN_PAGE_SIZE + 1)
     return text, markup
@@ -340,6 +343,21 @@ def _parse_setting(key: str, raw: str):
         if not 1 <= value <= 25:
             raise ValueError("Max positions must be 1-25.")
         return value
+    if key in ("min_liquidity_usd", "min_volume_h1_usd"):
+        value = float(raw.replace("$", "").replace(",", ""))
+        if not 0 <= value <= 10_000_000:
+            raise ValueError("Value must be between 0 and 10,000,000 (USD).")
+        return value
+    if key == "min_buys_h1":
+        value = int(float(raw))
+        if not 0 <= value <= 1000:
+            raise ValueError("Min 1h buys must be 0-1000.")
+        return value
+    if key == "max_pair_age_hours":
+        value = float(raw)
+        if not 1 <= value <= 168:
+            raise ValueError("Max pair age must be 1-168 hours.")
+        return value
     raise ValueError("This setting can't be edited here.")
 
 
@@ -357,6 +375,12 @@ SETTING_PROMPTS = {
     "min_alert_score": "Send new minimum score for alerts, 0-100 (current: {v})",
     "min_autobuy_score": "Send new minimum score for autobuy, 0-100 (current: {v})",
     "max_positions": "Send new max open positions (current: {v})",
+    "min_liquidity_usd": "Send new minimum pool liquidity in USD — lower shows "
+                         "more (riskier) coins (current: ${v})",
+    "min_volume_h1_usd": "Send new minimum 1-hour volume in USD (current: ${v})",
+    "min_buys_h1": "Send new minimum buys in the last hour (current: {v})",
+    "max_pair_age_hours": "Send new maximum pair age in hours — higher keeps "
+                          "coins in view longer (current: {v}h)",
 }
 
 

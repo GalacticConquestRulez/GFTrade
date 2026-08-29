@@ -309,8 +309,12 @@ def signal_report_lines(signal_log: list) -> list:
 
 
 def safety_flag(verdict: dict) -> str:
-    """Compact per-row safety verdict for the /scan list: ✅ proven safe,
-    🚫 with the first known-bad reason, ❓ when it couldn't be verified."""
+    """Compact per-row verdict for the /scan list: ✅ proven safe,
+    🚫 with the first known-bad safety reason, ❓ unverified, or
+    🔻 + reason for a near-miss that failed the market screens."""
+    if not verdict.get("screened_ok", True):
+        reason = (verdict.get("reject_reasons") or ["screen"])[0]
+        return f"🔻 {esc(reason)}"
     if verdict.get("safety_ok"):
         return "✅"
     report = verdict.get("safety")
@@ -337,24 +341,39 @@ def _is_unverified(verdict: dict) -> bool:
     )
 
 
-def scan_page_text(verdicts: list, page: int, page_size: int) -> str:
+def scan_page_text(verdicts: list, page: int, page_size: int,
+                   evaluated: int = None) -> str:
     if not verdicts:
+        if evaluated == 0:
+            return (
+                "Scan finished with an empty candidate pool — either the "
+                "bot just started (the pool refills within a few minutes) "
+                "or the discovery feeds are unreachable. Check /start for "
+                "feed status."
+            )
         return (
-            "Scan finished: nothing currently passes the market screens "
-            "(age window, liquidity, volume, organic activity).\n"
-            "That's normal in quiet stretches — the background scanner "
-            "keeps watching and will alert you when something qualifies."
+            "Scan finished: nothing in the pool is inside the tradable age "
+            "window right now. The background scanner keeps watching and "
+            "will alert you when something qualifies."
         )
     total_pages = (len(verdicts) + page_size - 1) // page_size
     start = page * page_size
+    screened_count = sum(1 for v in verdicts if v.get("screened_ok"))
+    near_miss_count = len(verdicts) - screened_count
     safe_count = sum(1 for v in verdicts if v.get("safety_ok"))
-    unverified = sum(1 for v in verdicts if not v.get("safety_ok") and _is_unverified(v))
     lines = [
-        f"<b>Best candidates right now</b> — {len(verdicts)} screened, "
-        f"page {page + 1}/{total_pages}",
-        f"✅ {safe_count} pass every safety check · only those can be "
-        "alerted or auto-bought",
+        f"<b>Best candidates right now</b> — page {page + 1}/{total_pages}",
+        f"✅ {safe_count} fully safe · {screened_count} pass screens · "
+        f"only ✅ can be alerted or auto-bought",
     ]
+    if near_miss_count:
+        lines.append(
+            f"🔻 {near_miss_count} near-misses shown with why they fell "
+            "short — loosen thresholds in /settings if too strict"
+        )
+    unverified = sum(1 for v in verdicts
+                     if v.get("screened_ok") and not v.get("safety_ok")
+                     and _is_unverified(v))
     if unverified >= 3 and unverified * 2 >= len(verdicts):
         lines.append(
             "⚠️ <i>Safety data unavailable for most (❓) — your RPC or "
@@ -402,6 +421,11 @@ def settings_text(settings: dict, dry_run: bool) -> str:
         f"📉 Trailing stop (from entry): {trailing}",
         f"📂 Max positions: {settings['max_positions']}",
         "",
+        f"🔬 Screens: liq ≥ {fmt_usd(settings.get('min_liquidity_usd', 0))} · "
+        f"1h vol ≥ {fmt_usd(settings.get('min_volume_h1_usd', 0))} · "
+        f"1h buys ≥ {settings.get('min_buys_h1', 0):g} · "
+        f"age ≤ {settings.get('max_pair_age_hours', 0):g}h",
+        "",
         "Dry-run vs live is set by the DRY_RUN environment variable, not here — "
         "changing money-mode should require touching the deployment.",
     ])
@@ -429,22 +453,42 @@ def wallet_text(dry_run: bool, address: str = None, balance_sol: float = None,
 
 
 def start_text(dry_run: bool, summary: dict, scanner_on: bool, pool_size: int,
-               last_tick_at: float = None) -> str:
+               last_tick_at: float = None, tick_stats: dict = None,
+               feed_status: dict = None, version: str = None) -> str:
     tick = "never"
     if last_tick_at:
         tick = f"{max(0, time.time() - last_tick_at):.0f}s ago"
     win_rate = f"{summary['win_rate'] * 100:.0f}%" if summary["win_rate"] is not None else "—"
-    return "\n".join([
-        f"<b>GFTrade</b> — {mode_banner(dry_run)}",
+    title = "<b>GFTrade</b>"
+    if version:
+        title += f" v{esc(version)}"
+    lines = [
+        f"{title} — {mode_banner(dry_run)}",
         "",
         f"🔎 Scanner {'on' if scanner_on else 'OFF'} · watching {pool_size} candidates · "
         f"last sweep {tick}",
+    ]
+    if tick_stats:
+        lines.append(
+            f"📈 Last sweep: {tick_stats.get('checked', 0)} checked · "
+            f"{tick_stats.get('passed_screen', 0)} passed screens · "
+            f"{tick_stats.get('signals', 0)} signals"
+        )
+    if feed_status:
+        marks = {"ok": "✓", "empty": "∅", "error": "✗"}
+        shown = " · ".join(
+            f"{esc(name)} {marks.get(state, '?')}"
+            for name, state in sorted(feed_status.items())
+        )
+        lines.append(f"📡 Feeds: {shown}")
+    lines.extend([
         f"📂 {summary['open_positions']} open · {summary['closed_trades']} closed · "
         f"win rate {win_rate} · PnL {summary['realized_pnl_sol']:+.4f} SOL",
         "",
         "Paste any Solana token address for an instant card with buy buttons, "
         "or use the menu below.",
     ])
+    return "\n".join(lines)
 
 
 def help_text() -> str:

@@ -265,14 +265,26 @@ Pipeline per scan tick (default every 90s):
    alert requires a triggered pattern **and** score ≥ `min_alert_score`;
    autobuy additionally requires score ≥ `min_autobuy_score`.
 
-Key `config.py` constants to tune while watching the logs:
+`/scan` is also the tuning feedback loop: when fewer than 10 coins pass
+the screens, the list fills with the best-scored **near-misses**, each
+marked 🔻 with the exact threshold it failed ("liquidity $7,400 below
+floor $10,000"). If the same reason keeps appearing on coins you'd want
+to see, loosen that threshold — the big four (min liquidity, min 1h
+volume, min 1h buys, max age) are editable live from `/settings`, no
+restart needed. Near-misses are display-only: they can never be alerted
+or auto-bought.
 
-- `MIN_PAIR_AGE_MINUTES` / `MAX_PAIR_AGE_HOURS` — the freshness window
-- `MIN_LIQUIDITY_USD`, `MIN/MAX_LIQ_TO_MCAP_RATIO` — the
-  manipulation-sanity core of the system
-- `MIN_BUYS_5M`, `MIN_BUYS_H1`, `MAX_BUY_SELL_IMBALANCE` — organic-activity
-  floors
+The remaining constants live in `config.py` (server edit + restart):
+
+- `MIN_PAIR_AGE_MINUTES` — the "let it breathe" delay on brand-new pairs
+- `MIN/MAX_LIQ_TO_MCAP_RATIO` — the manipulation-sanity core of the system
+- `MIN_BUYS_5M`, `MAX_BUY_SELL_IMBALANCE` — short-window activity shape
 - `MAX_TOP10_HOLDER_PCT` — holder-concentration cap
+- `MIN_LP_LOCKED_PCT` — the LP-lock bar
+
+`/start` shows live diagnostics: bot version, candidate-pool size, last
+sweep's checked/passed/signal counts, and per-feed health (profiles /
+new-pools ✓ ∅ ✗) — the first place to look when results seem thin.
 
 Add your own pattern: write a function in `discovery/patterns.py` with
 signature `(pair: dict) -> (triggered, confidence 0-1, name)` using any

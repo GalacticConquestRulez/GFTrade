@@ -42,7 +42,11 @@ class Scanner:
         self.pool = {}
         self.last_tick_at = None
         self.last_tick_stats = {}
-        # /scan results cached for pagination: {"verdicts": [...], "at": ts}
+        # feed name -> "ok" / "error" from the most recent attempt, so
+        # /start can show whether discovery data is actually flowing
+        self.feed_status = {}
+        # /scan results cached for pagination:
+        # {"verdicts": [...], "at": ts, "evaluated": how many pool mints had pairs}
         self.last_scan = None
 
     # ---------- pool management ----------
@@ -74,7 +78,8 @@ class Scanner:
 
     async def evaluate_pair(self, pair: dict, boosted: set) -> dict:
         """Full verdict for one pair: screen -> safety -> patterns -> score."""
-        ok, reasons = filters.screen_pair(pair, boosted)
+        ok, reasons = filters.screen_pair(pair, boosted,
+                                          overrides=self.store.settings)
         verdict = {
             "pair": pair,
             "mint": (pair.get("baseToken") or {}).get("address"),
@@ -148,17 +153,22 @@ class Scanner:
         try:
             profiles = await self.dex.token_profiles_latest()
             stats["profiles_new"] = self._absorb_profiles(profiles)
+            self.feed_status["profiles"] = "ok"
         except Exception:
             logger.warning("token-profiles feed unavailable this tick")
+            self.feed_status["profiles"] = "error"
         if self.gecko is not None:
             # The early feed: every new Solana pool (pump.fun graduations
             # included) minutes after creation, not just profiled tokens.
             try:
-                stats["pools_new"] = self._absorb_mints(
-                    await self.gecko.new_solana_pool_mints()
-                )
+                mints = await self.gecko.new_solana_pool_mints()
+                stats["pools_new"] = self._absorb_mints(mints)
+                # An empty parse every time would mean the schema changed on
+                # us — surface that as degraded rather than silently "ok".
+                self.feed_status["new-pools"] = "ok" if mints else "empty"
             except Exception:
                 logger.warning("geckoterminal new-pools feed unavailable this tick")
+                self.feed_status["new-pools"] = "error"
 
         boosted = set()
         if config.EXCLUDE_BOOSTED:
@@ -191,7 +201,7 @@ class Scanner:
                     del self.pool[mint]
                 continue
             age_hours = filters.pair_age_hours(pair)
-            if age_hours > config.MAX_PAIR_AGE_HOURS:
+            if age_hours > settings.get("max_pair_age_hours", config.MAX_PAIR_AGE_HOURS):
                 del self.pool[mint]  # aged out of our window for good
                 continue
 
@@ -291,15 +301,25 @@ class Scanner:
 
     # ---------- on-demand scan (/scan) ----------
 
+    SCAN_MIN_LIST = 10  # /scan always tries to show at least this many, ranked
+
     async def scan_now(self, top_n: int = 30) -> list:
-        """One synchronous sweep for the /scan command: refresh the pool,
-        evaluate everything, and return every candidate that passes the
-        MARKET screens, ranked for browsing: fully-safe tokens (renounced,
-        unfrozen, holder-sane, LP-locked) first by score, then the rest by
-        score with their safety verdicts attached so the UI can badge WHY
-        each one falls short (or couldn't be verified). Alerts and autobuy
-        never touch the non-✅ ones — this list is for eyes, not money.
-        Results are cached on self.last_scan for the paged Telegram view."""
+        """One synchronous sweep for the /scan command. Returns a ranked
+        browsing list in three tiers, best score first within each:
+
+          1. pass the market screens AND every safety check (✅)
+          2. pass the market screens, fail/unverified on safety (🚫/❓)
+          3. near-misses: fail the market screens, shown with the first
+             reason why — included only when tiers 1+2 hold fewer than
+             SCAN_MIN_LIST entries, so the list is never uselessly empty
+             and the rejection reasons double as tuning feedback.
+
+        Near-misses skip the on-chain safety lookups (no point spending
+        rate-limited calls on coins that already failed) so their scores
+        carry no safety points. Aged-out pairs never appear even as
+        near-misses. Alerts and autobuy still only touch tier 1 — this
+        list is for eyes, not money. Results are cached on self.last_scan
+        for the paged Telegram view."""
         profiles = await self.dex.token_profiles_latest()
         self._absorb_profiles(profiles)
         boosted = set()
@@ -310,7 +330,8 @@ class Scanner:
                 pass
         batch = [m for m, _ in sorted(self.pool.items(), key=lambda kv: -kv[1])]
         batch = batch[:EVAL_BATCH_PER_TICK]
-        verdicts = []
+        screened, near_misses = [], []
+        evaluated = 0
         if batch:
             pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID, batch)
             best_by_mint = {}
@@ -321,14 +342,29 @@ class Scanner:
                 if current is None or liq > ((current.get("liquidity") or {}).get("usd") or 0):
                     best_by_mint[mint] = pair
 
+            strict = self.store.settings["security_strict"]
+            evaluated = len(best_by_mint)
             for mint, pair in best_by_mint.items():
                 verdict = await self.evaluate_pair(pair, boosted)
-                if not verdict["screened_ok"]:
+                if verdict["screened_ok"]:
+                    screened.append(verdict)
                     continue
-                verdicts.append(verdict)
-            verdicts.sort(key=lambda v: (not v["safety_ok"], -v["score"]))
-            verdicts = verdicts[:top_n]
-        self.last_scan = {"verdicts": verdicts, "at": time.time()}
+                # Near-miss: keep unless it's simply too old for our window.
+                if any("exceeds max" in r for r in verdict["reject_reasons"]):
+                    continue
+                verdict["patterns"] = patterns.scan(pair)
+                verdict["score"], verdict["breakdown"] = scoring.score_pair(
+                    pair, None, strict
+                )
+                near_misses.append(verdict)
+
+        screened.sort(key=lambda v: (not v["safety_ok"], -v["score"]))
+        near_misses.sort(key=lambda v: -v["score"])
+        verdicts = screened[:top_n]
+        if len(verdicts) < self.SCAN_MIN_LIST:
+            verdicts += near_misses[:self.SCAN_MIN_LIST - len(verdicts)]
+        self.last_scan = {"verdicts": verdicts, "at": time.time(),
+                          "evaluated": evaluated}
         return verdicts
 
     # ---------- the loop ----------

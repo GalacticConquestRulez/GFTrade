@@ -74,10 +74,22 @@ def test_ranked_best_first_across_pages():
 def test_empty_scan_renders_explanation_with_rescan():
     deps = deps_with([])
     text, markup = scan_page_view(deps, 0)
-    assert "nothing currently passes" in text
+    assert "Scan finished" in text
     callbacks = [b.callback_data for b in buttons_of(markup)]
     assert "scan" in callbacks  # re-scan stays available
     assert not any((c or "").startswith("scp:") for c in callbacks)
+
+
+def test_empty_pool_points_at_feed_status():
+    deps = SimpleNamespace(scanner=SimpleNamespace(
+        last_scan={"verdicts": [], "at": time.time(), "evaluated": 0}
+    ))
+    text, _ = scan_page_view(deps, 0)
+    assert "empty candidate pool" in text and "/start" in text
+    # with candidates evaluated but none listable, the message differs
+    deps.scanner.last_scan["evaluated"] = 40
+    text, _ = scan_page_view(deps, 0)
+    assert "empty candidate pool" not in text
 
 
 def test_safety_flag_states():
@@ -112,14 +124,14 @@ def test_header_counts_and_unverified_warning():
                               top10_pct=10.0, lp_locked_pct=None)
     deps = deps_with(make_verdicts(6, safety_ok=False, safety=unverified))
     text, _ = scan_page_view(deps, 0)
-    assert "✅ 0 pass every safety check" in text
+    assert "✅ 0 fully safe" in text
     assert "rate-limiting" in text
     assert "❓ unverified" in text
 
     # fully-verified list -> no warning
     deps = deps_with(make_verdicts(6, safety_ok=True))
     text, _ = scan_page_view(deps, 0)
-    assert "✅ 6 pass every safety check" in text
+    assert "✅ 6 fully safe" in text
     assert "rate-limiting" not in text
 
 
