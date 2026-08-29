@@ -115,14 +115,23 @@ def render_event(deps: Deps, event: dict):
 
 
 async def publish_events(app: Application, deps: Deps, events: list) -> None:
+    """Broadcast each event to every authorized user. Per-recipient failures
+    (someone hasn't opened a chat with the bot yet, blocked it, ...) are
+    logged and never block the other recipients."""
     for event in events:
         try:
             text, markup = render_event(deps, event)
-            if not text:
-                continue
-            await app.bot.send_message(
-                chat_id=config.OWNER_ID, text=text, reply_markup=markup,
-                parse_mode=ParseMode.HTML, disable_web_page_preview=True,
-            )
         except Exception:
-            logger.exception("failed to publish event %r", event.get("type"))
+            logger.exception("failed to render event %r", event.get("type"))
+            continue
+        if not text:
+            continue
+        for user_id in config.AUTHORIZED_IDS:
+            try:
+                await app.bot.send_message(
+                    chat_id=user_id, text=text, reply_markup=markup,
+                    parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                )
+            except Exception:
+                logger.exception("failed to deliver %r to user %s",
+                                 event.get("type"), user_id)

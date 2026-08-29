@@ -1,9 +1,12 @@
 """
 Command handlers, the pasted-mint flow, and the inline-button dispatcher.
 
-Every entry point is gated by owner_only: this bot drives a wallet, so any
-update not from the configured owner is dropped without a reply (replying
-would confirm the bot exists to whoever is probing it).
+Every entry point is gated by authorized_only: this bot drives a wallet, so
+any update not from a user in config.AUTHORIZED_IDS is dropped without a
+reply (replying would confirm the bot exists to whoever is probing it).
+Authorized users share everything — wallet, positions, settings, alerts —
+except private-key export, which only the primary owner (the first id in
+the list) can perform.
 """
 import asyncio
 import contextlib
@@ -31,15 +34,18 @@ def deps_of(context: ContextTypes.DEFAULT_TYPE):
     return context.application.bot_data["deps"]
 
 
-def owner_only(func):
+def is_authorized(user_id) -> bool:
+    return user_id in config.AUTHORIZED_IDS
+
+
+def authorized_only(func):
     @functools.wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         chat = update.effective_chat
-        allowed = {config.OWNER_ID}
-        if (user and user.id in allowed) or (chat and chat.id in allowed):
+        if (user and is_authorized(user.id)) or (chat and is_authorized(chat.id)):
             return await func(update, context)
-        logger.warning("ignored update from non-owner user=%s chat=%s",
+        logger.warning("ignored update from unauthorized user=%s chat=%s",
                        user.id if user else None, chat.id if chat else None)
     return wrapper
 
@@ -150,18 +156,18 @@ async def do_sell(deps, message, mint: str, pct: float):
 
 # ---------- commands ----------
 
-@owner_only
+@authorized_only
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text, markup = start_view(deps_of(context))
     await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
 
 
-@owner_only
+@authorized_only
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(fmt.help_text(), parse_mode=ParseMode.HTML)
 
 
-@owner_only
+@authorized_only
 async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deps = deps_of(context)
     args = context.args or []
@@ -190,14 +196,14 @@ async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     disable_web_page_preview=True)
 
 
-@owner_only
+@authorized_only
 async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text, markup = await positions_view(deps_of(context))
     await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.HTML,
                                     disable_web_page_preview=True)
 
 
-@owner_only
+@authorized_only
 async def cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deps = deps_of(context)
     text = fmt.trades_text(deps.store.summary(), deps.store.data["closed_trades"],
@@ -205,7 +211,7 @@ async def cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
-@owner_only
+@authorized_only
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deps = deps_of(context)
     text = fmt.settings_text(deps.store.settings, deps.engine.dry_run)
@@ -213,14 +219,14 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     parse_mode=ParseMode.HTML)
 
 
-@owner_only
+@authorized_only
 async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text, markup = await wallet_view(deps_of(context))
     await update.message.reply_text(text, reply_markup=markup, parse_mode=ParseMode.HTML,
                                     disable_web_page_preview=True)
 
 
-@owner_only
+@authorized_only
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deps = deps_of(context)
     waiting = await update.message.reply_text("🔎 Sweeping DexScreener… (~10-30s)")
@@ -237,7 +243,7 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-@owner_only
+@authorized_only
 async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deps = deps_of(context)
     mint = extract_mint(" ".join(context.args or []))
@@ -249,7 +255,7 @@ async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔇 Muted — this token will never be alerted again.")
 
 
-@owner_only
+@authorized_only
 async def cmd_panic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deps = deps_of(context)
     count = len(deps.store.positions)
@@ -331,7 +337,7 @@ def _setting_current(settings: dict, key: str):
     return f"{value:g}" if isinstance(value, float) else value
 
 
-@owner_only
+@authorized_only
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deps = deps_of(context)
     text = (update.message.text or "").strip()
@@ -379,7 +385,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- inline buttons ----------
 
-@owner_only
+@authorized_only
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     deps = deps_of(context)
@@ -480,6 +486,11 @@ async def dispatch_callback(query, context, deps, data: str):
         await safe_edit(query, text, markup)
 
     elif verb == "we":
+        if query.from_user is None or query.from_user.id != config.OWNER_ID:
+            await query.answer("Only the primary owner (first id in "
+                               "TELEGRAM_USER_IDS) can export the wallet key.",
+                               show_alert=True)
+            return
         if deps.keypair is None:
             await query.answer("No live wallet loaded in dry-run mode.", show_alert=True)
             return
@@ -493,6 +504,11 @@ async def dispatch_callback(query, context, deps, data: str):
         )
 
     elif verb == "wec":
+        if query.from_user is None or query.from_user.id != config.OWNER_ID:
+            await query.answer("Only the primary owner (first id in "
+                               "TELEGRAM_USER_IDS) can export the wallet key.",
+                               show_alert=True)
+            return
         if deps.keypair is None:
             await query.answer("No live wallet loaded in dry-run mode.", show_alert=True)
             return

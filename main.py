@@ -36,8 +36,9 @@ def validate_config() -> None:
     problems = []
     if not config.TELEGRAM_BOT_TOKEN:
         problems.append("TELEGRAM_BOT_TOKEN is not set (get one from @BotFather).")
-    if not config.OWNER_ID:
-        problems.append("TELEGRAM_CHAT_ID is not set (message @userinfobot for yours).")
+    if not config.AUTHORIZED_IDS:
+        problems.append("TELEGRAM_USER_IDS is not set (comma-separated numeric "
+                        "Telegram user ids; message @userinfobot for yours).")
     if problems:
         for problem in problems:
             print(f"config error: {problem}", file=sys.stderr)
@@ -87,16 +88,18 @@ async def run() -> None:
         await app.bot.set_my_commands(BOT_COMMANDS)
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
-        try:
-            extra = ("" if config.DRY_RUN else
-                     "\n⚠️ Live mode: this bot can spend real SOL from its wallet.")
-            await app.bot.send_message(
-                config.OWNER_ID,
-                f"🚀 GFTrade online — {mode}. Send /start for the menu.{extra}",
-            )
-        except Exception:
-            logger.warning("could not message owner on startup — open a chat "
-                           "with the bot and send /start once")
+        extra = ("" if config.DRY_RUN else
+                 "\n⚠️ Live mode: this bot can spend real SOL from its wallet.")
+        for user_id in config.AUTHORIZED_IDS:
+            try:
+                await app.bot.send_message(
+                    user_id,
+                    f"🚀 GFTrade online — {mode}. Send /start for the menu.{extra}",
+                )
+            except Exception:
+                logger.warning("could not message user %s on startup — they need "
+                               "to open a chat with the bot and press Start once",
+                               user_id)
 
         scan_task = asyncio.create_task(
             scanner.run_forever(lambda events: publish_events(app, deps, events))

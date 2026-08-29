@@ -54,8 +54,10 @@ when something goes wrong.
 - Settings menu with buttons for everything runtime-tunable: presets,
   slippage, TP/SL, trailing stop, autobuy, score thresholds, max positions.
 - Wallet: generate or import, balance view, guarded private-key export.
-- Single-owner: every command and button is ignored unless it comes from
-  your Telegram user id.
+- Access control: every command and button is ignored unless it comes from
+  a Telegram user id in `TELEGRAM_USER_IDS`. Multiple ids share one bot —
+  same wallet, positions, and settings, and everyone gets every alert —
+  but private-key export is restricted to the first id (the primary owner).
 
 **Automated coin discovery ("find good coins")**
 - Rolling candidate pool from DexScreener's newest token profiles,
@@ -86,14 +88,22 @@ pip install -r requirements.txt
 ### 2. Create the Telegram bot
 
 1. Message **@BotFather** → `/newbot` → copy the token.
-2. Message **@userinfobot** → copy your numeric user id.
+2. Message **@userinfobot** → copy your numeric user id (each person who
+   should have access does this).
 
 ### 3. Configure
 
 ```bash
 cp .env.example .env
-# edit .env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# edit .env: TELEGRAM_BOT_TOKEN, TELEGRAM_USER_IDS
 ```
+
+`TELEGRAM_USER_IDS` is comma-separated; list yourself first — the first id
+is the primary owner and the only one who can export the wallet key.
+Everyone listed can otherwise do everything, including spending from the
+shared wallet in live mode — only add people you trust with the money in
+it. Each person must open the bot and press **Start** once before it can
+message them.
 
 `DRY_RUN=true` is the default — leave it while evaluating.
 

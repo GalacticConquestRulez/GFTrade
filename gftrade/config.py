@@ -34,11 +34,32 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _parse_ids(raw: str) -> list:
+    """Comma-separated Telegram ids -> [int]; junk entries are dropped."""
+    ids = []
+    for part in (raw or "").replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except ValueError:
+            pass
+    return ids
+
+
 # --- Telegram ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-# The bot is single-owner: only this Telegram user/chat id may issue
-# commands. Anyone else is silently ignored — this bot controls a wallet.
-OWNER_ID = _env_int("TELEGRAM_CHAT_ID", 0)
+# Authorized Telegram user ids, comma-separated (TELEGRAM_USER_IDS). Every
+# listed user can fully drive the bot — trade, change settings, panic-sell —
+# and receives every scanner alert; anyone else is silently ignored, because
+# this bot controls a wallet. The FIRST id is the primary owner: private-key
+# export is restricted to them. TELEGRAM_CHAT_ID is honored as a single-id
+# fallback so older configs keep working.
+AUTHORIZED_IDS = _parse_ids(
+    os.getenv("TELEGRAM_USER_IDS") or os.getenv("TELEGRAM_CHAT_ID") or ""
+)
+OWNER_ID = AUTHORIZED_IDS[0] if AUTHORIZED_IDS else 0
 
 # --- Chain / execution ---
 SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
