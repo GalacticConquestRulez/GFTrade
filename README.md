@@ -67,9 +67,16 @@ when something goes wrong.
   band (the core anti-manipulation check), volume floor, organic-activity
   floors, wash-trading ratio cap, and exclusion of anything paying
   DexScreener for placement.
-- On-chain safety checks via Solana RPC: mint authority renounced, no
-  freeze authority (the honeypot mechanic), top-10 holder concentration
-  (excluding the LP account).
+- On-chain safety checks via Solana RPC: mint authority renounced
+  ("contract renounced"), no freeze authority (the honeypot mechanic),
+  top-10 holder concentration (excluding the LP account).
+- LP lock check via RugCheck: at least `MIN_LP_LOCKED_PCT` (default 80%)
+  of the pool's LP tokens must be locked or burned, so the deployer can't
+  simply pull the liquidity. In strict mode (default) a token whose LP
+  status can't be verified is rejected — no lock proof, no trade.
+- `/scan` returns every fully-passing candidate (renounced + LP locked +
+  the rest), best score first, paged 5 at a time with ◀️ ▶️ arrows and a
+  per-token view button.
 - Momentum/accumulation patterns + a weighted 0–100 composite score.
 - Signal cards with buy buttons; per-token mute; 24h re-alert cooldown.
 - Optional autobuy above a stricter score, with TP/SL/trailing management
@@ -200,7 +207,7 @@ you'll keep it stopped for long in live mode, close positions first.
 | Command | What it does |
 |---|---|
 | `/start` | Main menu: mode, scanner status, positions/PnL summary |
-| `/scan` | Sweep now; top screened candidates with scores + view buttons |
+| `/scan` | Sweep now; every fully-passing candidate, best first, paged with ◀️ ▶️ |
 | `/buy <mint> [SOL]` | Token card — or instant buy when an amount is given |
 | *(paste a mint)* | Same as `/buy <mint>` |
 | `/positions` (`/sell`) | Open positions, live PnL, sell buttons |
@@ -224,9 +231,15 @@ Pipeline per scan tick (default every 90s):
 3. **Re-check the pool** in batches against live pair data.
 4. **Hard screens** (`gftrade/discovery/filters.py`, thresholds in
    `config.py`): every rejection is logged with its reason.
-5. **On-chain safety** (`discovery/safety.py`): mint/freeze authority,
-   holder concentration. `security_strict` (in `/settings`) decides whether
-   an *unknown* result (RPC down) rejects or passes.
+5. **Safety checks** (`discovery/safety.py`): mint/freeze authority and
+   holder concentration from Solana RPC, plus LP locked/burned percentage
+   from RugCheck's public API (`clients/rugcheck.py`) — reading LP locks
+   generically from raw RPC would mean parsing every DEX's pool layout.
+   `security_strict` (in `/settings`) decides whether an *unknown* result
+   (RPC or RugCheck down) rejects or passes. If RugCheck is unreachable
+   from your server, every token shows `LP ❓` and strict mode will pass
+   nothing — either fix connectivity or set `LP_CHECK_ENABLED=false` in
+   the environment to drop the LP requirement.
 6. **Patterns + score** (`discovery/patterns.py`, `discovery/scoring.py`):
    alert requires a triggered pattern **and** score ≥ `min_alert_score`;
    autobuy additionally requires score ≥ `min_autobuy_score`.

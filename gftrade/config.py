@@ -103,6 +103,16 @@ EXCLUDE_BOOSTED = True           # drop anything paying DexScreener for placemen
 MAX_TOP10_HOLDER_PCT = 30.0
 SAFETY_CACHE_TTL_SECONDS = 600
 
+# --- LP lock screening (RugCheck) ---
+# "Liquidity locked/burned" can't be read generically from raw RPC without
+# per-DEX pool layout parsing, so this uses RugCheck's public API. If the
+# API is unreachable the LP status is UNKNOWN — which strict mode rejects
+# (no lock proof, no trade) and lenient mode allows. Set
+# LP_CHECK_ENABLED=false to drop the requirement entirely.
+LP_CHECK_ENABLED = _env_bool("LP_CHECK_ENABLED", True)
+RUGCHECK_API_BASE = os.getenv("RUGCHECK_API_BASE", "https://api.rugcheck.xyz/v1")
+MIN_LP_LOCKED_PCT = 80.0         # at least this % of LP must be locked/burned
+
 # --- Discovery bookkeeping ---
 CANDIDATE_POOL_MAX = 400         # mints tracked for re-checks between scans
 ALERT_COOLDOWN_HOURS = 24        # don't re-alert the same mint within this window
@@ -120,8 +130,8 @@ DEFAULT_SETTINGS = {
     "autobuy_sol": 0.05,         # size per auto entry
     "buy_presets": [0.1, 0.5, 1.0],  # SOL amounts on quick-buy buttons
     "slippage_bps": 200,         # 2% — new pairs move; tighter values fail to fill
-    "take_profit_pct": 30.0,
-    "stop_loss_pct": 15.0,
+    "take_profit_pct": 35.0,
+    "stop_loss_pct": 30.0,
     "trailing_stop_pct": 0.0,    # 0 = off; >0 arms a stop that follows the peak price
     "min_alert_score": 70,       # 0-100 composite score needed to alert
     "min_autobuy_score": 82,     # stricter bar before money moves on its own

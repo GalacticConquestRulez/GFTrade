@@ -77,6 +77,8 @@ def _liquidity(pair: dict) -> float:
 
 
 def _safety(report, strict: bool) -> float:
+    from .. import config  # local import: scoring stays otherwise config-free
+
     if report is None:
         return 0.0 if strict else 0.5
     unknown_credit = 0.0 if strict else 0.5
@@ -90,10 +92,21 @@ def _safety(report, strict: bool) -> float:
     if report.top10_pct is not None:
         # full credit under 15%, fading to zero by 40%
         top10_ok = _clamp((40 - report.top10_pct) / 25)
+
+    if not config.LP_CHECK_ENABLED:
+        return (
+            0.4 * credit(report.mint_renounced)
+            + 0.3 * credit(report.freeze_none)
+            + 0.3 * (top10_ok if top10_ok is not None else unknown_credit)
+        )
+    lp_ok = None
+    if getattr(report, "lp_locked_pct", None) is not None:
+        lp_ok = _clamp(report.lp_locked_pct / 100)
     return (
-        0.4 * credit(report.mint_renounced)
-        + 0.3 * credit(report.freeze_none)
-        + 0.3 * (top10_ok if top10_ok is not None else unknown_credit)
+        0.3 * credit(report.mint_renounced)
+        + 0.25 * credit(report.freeze_none)
+        + 0.25 * (top10_ok if top10_ok is not None else unknown_credit)
+        + 0.2 * (lp_ok if lp_ok is not None else unknown_credit)
     )
 
 

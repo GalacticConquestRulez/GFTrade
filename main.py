@@ -17,6 +17,7 @@ from gftrade import config
 from gftrade import wallet as wallet_mod
 from gftrade.clients.dexscreener import DexScreener
 from gftrade.clients.jupiter import Jupiter
+from gftrade.clients.rugcheck import RugCheck
 from gftrade.discovery.safety import SafetyChecker
 from gftrade.scanner import Scanner
 from gftrade.solana_rpc import SolanaRpc
@@ -67,7 +68,8 @@ async def run() -> None:
     dex = DexScreener(http)
     jupiter = Jupiter(http)
     store = Store()
-    safety = SafetyChecker(rpc)
+    rugcheck = RugCheck(http) if config.LP_CHECK_ENABLED else None
+    safety = SafetyChecker(rpc, rugcheck)
     engine = TradingEngine(store, dex, jupiter, rpc, keypair)
     scanner = Scanner(store, dex, engine, safety)
     deps = Deps(store=store, dex=dex, engine=engine, scanner=scanner,

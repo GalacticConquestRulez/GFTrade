@@ -13,6 +13,7 @@ import contextlib
 import functools
 import logging
 import re
+import time
 
 from solders.pubkey import Pubkey
 from telegram import Update
@@ -128,6 +129,23 @@ def start_view(deps):
     return text, kb.main_menu_kb()
 
 
+SCAN_PAGE_SIZE = 5
+SCAN_CACHE_MAX_AGE = 600  # seconds a cached /scan stays pageable
+
+
+def scan_page_view(deps, page: int):
+    """Page through the most recent /scan sweep (best score first)."""
+    cache = deps.scanner.last_scan or {"verdicts": [], "at": 0}
+    verdicts = cache["verdicts"]
+    total_pages = max(1, (len(verdicts) + SCAN_PAGE_SIZE - 1) // SCAN_PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    chunk = verdicts[page * SCAN_PAGE_SIZE:(page + 1) * SCAN_PAGE_SIZE]
+    text = fmt.scan_page_text(verdicts, page, SCAN_PAGE_SIZE)
+    markup = kb.scan_page_kb(chunk, page, total_pages,
+                             start_rank=page * SCAN_PAGE_SIZE + 1)
+    return text, markup
+
+
 # ---------- trade execution shared by commands and buttons ----------
 
 async def do_buy(deps, message, mint: str, sol_amount: float):
@@ -229,18 +247,18 @@ async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @authorized_only
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deps = deps_of(context)
-    waiting = await update.message.reply_text("🔎 Sweeping DexScreener… (~10-30s)")
+    waiting = await update.message.reply_text(
+        "🔎 Sweeping DexScreener + safety-checking… (can take up to a minute)"
+    )
     try:
-        verdicts = await deps.scanner.scan_now(top_n=5)
+        await deps.scanner.scan_now()
     except Exception as exc:
         logger.exception("manual scan failed")
         await waiting.edit_text(f"Scan failed: {fmt.esc(str(exc))[:300]}")
         return
-    await waiting.edit_text(
-        fmt.scan_results_text(verdicts),
-        reply_markup=kb.scan_results_kb(verdicts) if verdicts else None,
-        parse_mode=ParseMode.HTML,
-    )
+    text, markup = scan_page_view(deps, 0)
+    await waiting.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True)
 
 
 @authorized_only
@@ -418,10 +436,20 @@ async def dispatch_callback(query, context, deps, data: str):
         await safe_edit(query, fmt.help_text())
 
     elif verb == "scan":
-        await query.answer("Sweeping DexScreener…")
-        verdicts = await deps.scanner.scan_now(top_n=5)
-        await safe_edit(query, fmt.scan_results_text(verdicts),
-                        kb.scan_results_kb(verdicts) if verdicts else kb.main_menu_kb())
+        await query.answer("Sweeping + safety-checking… (up to a minute)")
+        await deps.scanner.scan_now()
+        text, markup = scan_page_view(deps, 0)
+        await safe_edit(query, text, markup)
+
+    elif verb == "scp":
+        cache = deps.scanner.last_scan
+        if cache is None or time.time() - cache["at"] > SCAN_CACHE_MAX_AGE:
+            await query.answer("These results expired — tap 🔄 Re-scan.",
+                               show_alert=True)
+            return
+        await query.answer()
+        text, markup = scan_page_view(deps, int(parts[1]))
+        await safe_edit(query, text, markup)
 
     elif verb == "r":
         text, markup = await render_token_view(deps, parts[1])

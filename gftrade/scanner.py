@@ -41,6 +41,8 @@ class Scanner:
         self.pool = {}
         self.last_tick_at = None
         self.last_tick_stats = {}
+        # /scan results cached for pagination: {"verdicts": [...], "at": ts}
+        self.last_scan = None
 
     # ---------- pool management ----------
 
@@ -203,11 +205,14 @@ class Scanner:
 
     # ---------- on-demand scan (/scan) ----------
 
-    async def scan_now(self, top_n: int = 5) -> list:
+    async def scan_now(self, top_n: int = 30) -> list:
         """One synchronous sweep for the /scan command: refresh the pool,
-        evaluate everything, return the best `top_n` verdicts that passed
-        the hard screen — even below the alert threshold, so you can see
-        what the scanner is weighing."""
+        evaluate everything, and return ranked verdicts (best score first)
+        that pass BOTH the hard screens and the safety checks — every entry
+        shown is renounced, unfrozen, holder-sane, and LP-locked (per
+        config). Listed even below the alert score threshold, so you can
+        see the full field the scanner is weighing. Results are cached on
+        self.last_scan for the paged Telegram view."""
         profiles = await self.dex.token_profiles_latest()
         self._absorb_profiles(profiles)
         boosted = set()
@@ -218,24 +223,29 @@ class Scanner:
                 pass
         batch = [m for m, _ in sorted(self.pool.items(), key=lambda kv: -kv[1])]
         batch = batch[:EVAL_BATCH_PER_TICK]
-        if not batch:
-            return []
-        pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID, batch)
-        best_by_mint = {}
-        for pair in pairs:
-            mint = (pair.get("baseToken") or {}).get("address")
-            current = best_by_mint.get(mint)
-            liq = (pair.get("liquidity") or {}).get("usd") or 0
-            if current is None or liq > ((current.get("liquidity") or {}).get("usd") or 0):
-                best_by_mint[mint] = pair
-
         verdicts = []
-        for mint, pair in best_by_mint.items():
-            verdict = await self.evaluate_pair(pair, boosted)
-            if verdict["screened_ok"]:
+        if batch:
+            pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID, batch)
+            best_by_mint = {}
+            for pair in pairs:
+                mint = (pair.get("baseToken") or {}).get("address")
+                current = best_by_mint.get(mint)
+                liq = (pair.get("liquidity") or {}).get("usd") or 0
+                if current is None or liq > ((current.get("liquidity") or {}).get("usd") or 0):
+                    best_by_mint[mint] = pair
+
+            strict = self.store.settings["security_strict"]
+            for mint, pair in best_by_mint.items():
+                verdict = await self.evaluate_pair(pair, boosted)
+                if not verdict["screened_ok"]:
+                    continue
+                if verdict["safety"] is None or not verdict["safety"].passes(strict):
+                    continue
                 verdicts.append(verdict)
-        verdicts.sort(key=lambda v: -v["score"])
-        return verdicts[:top_n]
+            verdicts.sort(key=lambda v: -v["score"])
+            verdicts = verdicts[:top_n]
+        self.last_scan = {"verdicts": verdicts, "at": time.time()}
+        return verdicts
 
     # ---------- the loop ----------
 

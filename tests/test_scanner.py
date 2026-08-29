@@ -118,3 +118,36 @@ async def test_pool_capped(store):
     scanner._absorb_profiles(profiles)
     from gftrade import config
     assert len(scanner.pool) <= config.CANDIDATE_POOL_MAX
+
+
+async def test_scan_now_excludes_unsafe_tokens(store):
+    """The /scan list must only contain fully-passing tokens — a token with
+    unlocked LP (or any failed safety check) never appears, even if it
+    screens fine on market data."""
+    from gftrade.discovery.safety import SafetyReport
+
+    class MixedSafety:
+        async def check(self, mint):
+            if mint == MINT_B:
+                return SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
+                                    top10_pct=10.0, lp_locked_pct=3.0)  # unlocked LP
+            return SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
+                                top10_pct=10.0, lp_locked_pct=100.0)
+
+    dex = FakeDex(
+        pairs_by_mint={MINT_A: make_strong_pair(),
+                       MINT_B: make_strong_pair(mint=MINT_B, symbol="RUGGY")},
+        profiles=[{"chainId": "solana", "tokenAddress": m} for m in (MINT_A, MINT_B)],
+    )
+    engine = TradingEngine(store, dex, dry_run=True)
+    scanner = Scanner(store, dex, engine, MixedSafety())
+    verdicts = await scanner.scan_now()
+    assert [v["mint"] for v in verdicts] == [MINT_A]
+
+
+async def test_scan_now_caches_results_for_paging(store):
+    scanner, _, _ = build_scanner(store, {MINT_A: make_strong_pair()})
+    assert scanner.last_scan is None
+    verdicts = await scanner.scan_now()
+    assert scanner.last_scan["verdicts"] == verdicts
+    assert scanner.last_scan["at"] > 0

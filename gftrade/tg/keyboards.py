@@ -68,13 +68,26 @@ def positions_kb(positions: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def scan_results_kb(verdicts: list) -> InlineKeyboardMarkup:
+def scan_page_kb(page_verdicts: list, page: int, total_pages: int,
+                 start_rank: int) -> InlineKeyboardMarkup:
     rows = []
-    for verdict in verdicts:
+    for offset, verdict in enumerate(page_verdicts):
         base = verdict["pair"].get("baseToken") or {}
-        label = f"{(base.get('symbol') or '?')[:12]} · {verdict['score']}/100"
+        label = (f"#{start_rank + offset} {(base.get('symbol') or '?')[:12]} · "
+                 f"{verdict['score']}/100")
         rows.append([InlineKeyboardButton(label, callback_data=f"r:{base.get('address')}")])
-    rows.append([InlineKeyboardButton("« Menu", callback_data="m")])
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"scp:{page - 1}"))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(f"· {page + 1}/{total_pages} ·",
+                                        callback_data="noop"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"scp:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("🔄 Re-scan", callback_data="scan"),
+                 InlineKeyboardButton("« Menu", callback_data="m")])
     return InlineKeyboardMarkup(rows)
 
 

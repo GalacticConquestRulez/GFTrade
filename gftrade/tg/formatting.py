@@ -247,24 +247,35 @@ def trades_text(summary: dict, last_trades: list, dry_run: bool) -> str:
     return "\n".join(lines)
 
 
-def scan_results_text(verdicts: list) -> str:
+def scan_page_text(verdicts: list, page: int, page_size: int) -> str:
     if not verdicts:
         return (
-            "Scan finished: nothing currently passes the hard screen.\n"
-            "That's normal — most of the time nothing is worth buying. "
-            "The background scanner keeps watching."
+            "Scan finished: nothing currently passes the screens + safety "
+            "checks (renounced mint, no freeze, sane holders, LP locked).\n"
+            "That's normal — most of the time nothing qualifies. The "
+            "background scanner keeps watching and will alert you."
         )
-    lines = ["<b>Top screened candidates right now</b> (score / pattern / safety):"]
-    for verdict in verdicts:
+    total_pages = (len(verdicts) + page_size - 1) // page_size
+    start = page * page_size
+    lines = [
+        f"<b>Best candidates right now</b> — {len(verdicts)} found, "
+        f"page {page + 1}/{total_pages}",
+        "<i>All are renounced, freeze-free, holder-sane, LP-locked.</i>",
+        "",
+    ]
+    for offset, verdict in enumerate(verdicts[start:start + page_size]):
         pair = verdict["pair"]
         base = pair.get("baseToken") or {}
         pattern = verdict["patterns"][0]["pattern"] if verdict["patterns"] else "no pattern"
         lines.append(
-            f"• <b>{esc(base.get('symbol') or '?')}</b> — {verdict['score']}/100 · "
-            f"{esc(pattern)} · liq {fmt_usd((pair.get('liquidity') or {}).get('usd'))} · "
+            f"<b>#{start + offset + 1} {esc(base.get('symbol') or '?')}</b> — "
+            f"{verdict['score']}/100 · {esc(pattern)}\n"
+            f"    liq {fmt_usd((pair.get('liquidity') or {}).get('usd'))} · "
+            f"MC {fmt_usd(pair.get('marketCap') or pair.get('fdv'))} · "
+            f"1h {fmt_pct((pair.get('priceChange') or {}).get('h1', 0) or 0)} · "
             f"{fmt_age(filters.pair_age_hours(pair))}"
         )
-    lines.append("\nTap a token below for the full card + buy buttons.")
+    lines.append("\nTap a token for its full card + buy buttons; ◀️ ▶️ to page.")
     return "\n".join(lines)
 
 
@@ -349,9 +360,10 @@ def help_text() -> str:
         "Pasting a token mint address as a plain message opens its card.",
         "",
         "The background scanner screens new Solana pairs (DexScreener), drops "
-        "promoted/manipulated-looking ones, safety-checks the token on-chain "
-        "(mint/freeze authority, holder concentration), scores the rest 0-100, "
-        "and alerts with buy buttons. Autobuy (off by default) acts on the "
-        "strongest signals automatically. TP/SL/trailing exits are monitored "
-        "by the bot — they only fire while the bot is running.",
+        "promoted/manipulated-looking ones, safety-checks each token "
+        "(renounced mint, no freeze authority, holder spread, LP locked), "
+        "scores the rest 0-100, and alerts with buy buttons. Autobuy (off by "
+        "default) acts on the strongest signals automatically. TP/SL/trailing "
+        "exits are monitored by the bot — they only fire while the bot is "
+        "running.",
     ])

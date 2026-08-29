@@ -53,3 +53,9 @@ def test_sim_balance_adjustments_persist(tmp_path):
     assert Store(path).stats["sim_balance_sol"] == pytest.approx(
         config.SIM_START_BALANCE_SOL - 0.3
     )
+
+
+def test_requested_exit_defaults_are_pinned():
+    """Auto-sell levels requested by the owners: +35% TP, -30% SL."""
+    assert config.DEFAULT_SETTINGS["take_profit_pct"] == 35.0
+    assert config.DEFAULT_SETTINGS["stop_loss_pct"] == 30.0
