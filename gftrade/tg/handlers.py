@@ -225,7 +225,7 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_trades(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deps = deps_of(context)
     text = fmt.trades_text(deps.store.summary(), deps.store.data["closed_trades"],
-                           deps.engine.dry_run)
+                           deps.engine.dry_run, deps.store.signal_log)
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
@@ -315,6 +315,16 @@ def _parse_setting(key: str, raw: str):
         if not lo <= value <= hi:
             raise ValueError(f"Value must be between {lo} and {hi} (percent).")
         return value
+    if key == "tp_sell_pct":
+        value = float(raw)
+        if not 10 <= value <= 100:
+            raise ValueError("TP sell portion must be 10-100% (100 = sell everything at TP).")
+        return value
+    if key == "runner_trailing_pct":
+        value = float(raw)
+        if not 5 <= value <= 95:
+            raise ValueError("Runner trailing stop must be 5-95%.")
+        return value
     if key == "autobuy_sol":
         value = float(raw)
         if not 0.001 <= value <= 1000:
@@ -338,6 +348,10 @@ SETTING_PROMPTS = {
     "slippage_bps": "Send new slippage in percent (current: {v}%)",
     "take_profit_pct": "Send new take-profit percent (current: {v}%)",
     "stop_loss_pct": "Send new stop-loss percent (current: {v}%)",
+    "tp_sell_pct": "How much of the position to sell when TP hits, in percent "
+                   "— 100 sells everything, less leaves a runner (current: {v}%)",
+    "runner_trailing_pct": "Trailing stop for the post-TP runner, percent off "
+                           "the peak with a breakeven floor (current: {v}%)",
     "trailing_stop_pct": "Send new trailing-stop percent, 0 to disable (current: {v})",
     "autobuy_sol": "Send new autobuy size in SOL (current: {v})",
     "min_alert_score": "Send new minimum score for alerts, 0-100 (current: {v})",

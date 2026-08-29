@@ -106,6 +106,8 @@ def settings_kb(settings: dict) -> InlineKeyboardMarkup:
          InlineKeyboardButton("✏️ Slippage %", callback_data="ste:slippage_bps")],
         [InlineKeyboardButton("✏️ Take profit %", callback_data="ste:take_profit_pct"),
          InlineKeyboardButton("✏️ Stop loss %", callback_data="ste:stop_loss_pct")],
+        [InlineKeyboardButton("✏️ TP sell portion %", callback_data="ste:tp_sell_pct"),
+         InlineKeyboardButton("✏️ Runner trail %", callback_data="ste:runner_trailing_pct")],
         [InlineKeyboardButton("✏️ Trailing stop %", callback_data="ste:trailing_stop_pct"),
          InlineKeyboardButton("✏️ Max positions", callback_data="ste:max_positions")],
         [InlineKeyboardButton("✏️ Autobuy SOL", callback_data="ste:autobuy_sol"),

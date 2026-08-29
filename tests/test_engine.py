@@ -76,6 +76,7 @@ async def test_sell_without_position_raises(engine):
 
 
 async def test_check_exits_take_profit(engine, dex, store):
+    store.set_setting("tp_sell_pct", 100.0)  # classic full close at TP
     await engine.buy(MINT_A, 0.5)
     tp_price = store.get_position(MINT_A)["tp_price_usd"]
     dex.pairs_by_mint[MINT_A] = make_pair(price_usd=tp_price * 1.05)

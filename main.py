@@ -16,6 +16,7 @@ import httpx
 from gftrade import config
 from gftrade import wallet as wallet_mod
 from gftrade.clients.dexscreener import DexScreener
+from gftrade.clients.geckoterminal import GeckoTerminal
 from gftrade.clients.jupiter import Jupiter
 from gftrade.clients.rugcheck import RugCheck
 from gftrade.discovery.safety import SafetyChecker
@@ -71,7 +72,7 @@ async def run() -> None:
     rugcheck = RugCheck(http) if config.LP_CHECK_ENABLED else None
     safety = SafetyChecker(rpc, rugcheck)
     engine = TradingEngine(store, dex, jupiter, rpc, keypair)
-    scanner = Scanner(store, dex, engine, safety)
+    scanner = Scanner(store, dex, engine, safety, gecko=GeckoTerminal(http))
     deps = Deps(store=store, dex=dex, engine=engine, scanner=scanner,
                 safety=safety, rpc=rpc, keypair=keypair)
     app = build_application(deps)

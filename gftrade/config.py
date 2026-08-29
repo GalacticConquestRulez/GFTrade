@@ -133,6 +133,12 @@ DEFAULT_SETTINGS = {
     "take_profit_pct": 35.0,
     "stop_loss_pct": 30.0,
     "trailing_stop_pct": 0.0,    # 0 = off; >0 arms a stop that follows the peak price
+    # Staged exits: at take-profit, sell only this % (100 = sell everything).
+    # The remainder ("the runner") is then protected by a trailing stop that
+    # never triggers below the entry price (a hard one-tick crash can still
+    # fill lower — monitored stops aren't resting orders).
+    "tp_sell_pct": 50.0,
+    "runner_trailing_pct": 20.0,
     "min_alert_score": 70,       # 0-100 composite score needed to alert
     "min_autobuy_score": 82,     # stricter bar before money moves on its own
     "max_positions": 3,

@@ -279,9 +279,19 @@ class TradingEngine:
     # ---------- automated exits ----------
 
     async def check_exits(self) -> list:
-        """Called every scanner tick. Updates peaks, fires TP / SL / trailing
-        exits, returns display events. A failed exit sell produces an
-        'exit_error' event — in live mode that must reach the owner loudly."""
+        """Called every scanner tick. Updates peaks and fires exits:
+
+        Before take-profit is hit, a position can close on stop_loss or the
+        optional from-entry trailing_stop. When price reaches TP, only
+        `tp_sell_pct` of the position is sold (100 = classic full close);
+        the remainder becomes a "runner" protected by a trailing stop of
+        `runner_trailing_pct` off the peak that never drops below the entry
+        price. That floor means the runner exit can't TRIGGER below entry —
+        though a sharp one-tick crash can still fill below it, since these
+        are monitored stops, not resting orders.
+
+        Returns display events; a failed exit sell produces an 'exit_error'
+        event — in live mode that must reach the owners loudly."""
         mints = list(self.store.positions.keys())
         if not mints:
             return []
@@ -295,6 +305,8 @@ class TradingEngine:
                 best_by_mint[mint] = pair
 
         settings = self.store.settings
+        tp_sell_pct = settings.get("tp_sell_pct") or 100
+        runner_trail = settings.get("runner_trailing_pct") or 20
         events = []
         dirty = False
         for mint in mints:
@@ -312,26 +324,51 @@ class TradingEngine:
                 position["peak_price_usd"] = price_usd
                 dirty = True
 
-            stop_price = position["sl_price_usd"]
-            stop_reason = "stop_loss"
-            trailing_pct = settings.get("trailing_stop_pct") or 0
-            if trailing_pct > 0:
-                trail_price = position["peak_price_usd"] * (1 - trailing_pct / 100)
-                if trail_price > stop_price:
-                    stop_price, stop_reason = trail_price, "trailing_stop"
+            reason, sell_pct = None, 100.0
+            if position.get("tp_taken"):
+                # Runner phase: trail off the peak, floored at breakeven.
+                runner_stop = max(
+                    position["entry_price_usd"],
+                    position["peak_price_usd"] * (1 - runner_trail / 100),
+                )
+                if price_usd <= runner_stop:
+                    reason = "runner_stop"
+            else:
+                stop_price = position["sl_price_usd"]
+                stop_reason = "stop_loss"
+                trailing_pct = settings.get("trailing_stop_pct") or 0
+                if trailing_pct > 0:
+                    trail_price = position["peak_price_usd"] * (1 - trailing_pct / 100)
+                    if trail_price > stop_price:
+                        stop_price, stop_reason = trail_price, "trailing_stop"
 
-            reason = None
-            if price_usd >= position["tp_price_usd"]:
-                reason = "take_profit"
-            elif price_usd <= stop_price:
-                reason = stop_reason
+                if price_usd >= position["tp_price_usd"]:
+                    reason = "take_profit"
+                    sell_pct = min(tp_sell_pct, 100.0)
+                elif price_usd <= stop_price:
+                    reason = stop_reason
 
             if reason is None:
                 continue
             try:
-                result = await self.sell(mint, 100, reason=reason, pair=pair)
-                events.append({"type": "exit", "reason": reason, **result["trade"]})
-                dirty = False  # sell() already persisted
+                result = await self.sell(mint, sell_pct, reason=reason, pair=pair)
+                if result["closed"]:
+                    events.append({"type": "exit", "reason": reason, **result["trade"]})
+                else:
+                    remaining = result["position"]
+                    remaining["tp_taken"] = True
+                    self.store.put_position(remaining)
+                    events.append({
+                        "type": "exit_partial", "reason": reason,
+                        "symbol": remaining.get("symbol", "?"),
+                        "dry_run": remaining.get("dry_run", self.dry_run),
+                        "pct": sell_pct, "sol_out": result["sol_out"],
+                        "price_usd": result["price_usd"],
+                        "remaining_tokens": remaining["token_amount"],
+                        "runner_trail_pct": runner_trail,
+                        "signature": result.get("signature"),
+                    })
+                dirty = False  # the sell path persisted the store
             except TradeError as exc:
                 events.append({
                     "type": "exit_error", "mint": mint,

@@ -31,13 +31,14 @@ EVAL_BATCH_PER_TICK = 120      # pool mints re-checked per tick (4 DexScreener c
 
 
 class Scanner:
-    def __init__(self, store, dex, engine, safety_checker):
+    def __init__(self, store, dex, engine, safety_checker, gecko=None):
         self.store = store
         self.dex = dex
         self.engine = engine
         self.safety = safety_checker
-        # mint -> first_seen ts. In-memory only: after a restart the profile
-        # feed repopulates it within a few ticks.
+        self.gecko = gecko  # GeckoTerminal new-pools feed (optional)
+        # mint -> first_seen ts. In-memory only: after a restart the feeds
+        # repopulate it within a few ticks.
         self.pool = {}
         self.last_tick_at = None
         self.last_tick_stats = {}
@@ -46,12 +47,9 @@ class Scanner:
 
     # ---------- pool management ----------
 
-    def _absorb_profiles(self, profiles: list) -> int:
+    def _absorb_mints(self, mints: list) -> int:
         added = 0
-        for profile in profiles:
-            if profile.get("chainId") != constants.CHAIN_ID:
-                continue
-            mint = profile.get("tokenAddress")
+        for mint in mints:
             if not mint or mint in self.pool:
                 continue
             if self.store.is_muted(mint) or self.store.get_position(mint):
@@ -65,6 +63,12 @@ class Scanner:
             ]:
                 del self.pool[mint]
         return added
+
+    def _absorb_profiles(self, profiles: list) -> int:
+        return self._absorb_mints([
+            p.get("tokenAddress") for p in profiles
+            if p.get("chainId") == constants.CHAIN_ID
+        ])
 
     # ---------- evaluation ----------
 
@@ -126,6 +130,12 @@ class Scanner:
                 logger.exception("discovery failed")
                 events.append({"type": "scan_error", "where": "discovery", "error": str(exc)})
 
+        # Fill in signal-outcome checkpoints for the report card (silent).
+        try:
+            await self._update_signal_log()
+        except Exception:
+            logger.exception("signal log update failed")
+
         stats["pool"] = len(self.pool)
         self.last_tick_at = time.time()
         self.last_tick_stats = stats
@@ -135,8 +145,20 @@ class Scanner:
         events = []
         settings = self.store.settings
 
-        profiles = await self.dex.token_profiles_latest()
-        stats["profiles_new"] = self._absorb_profiles(profiles)
+        try:
+            profiles = await self.dex.token_profiles_latest()
+            stats["profiles_new"] = self._absorb_profiles(profiles)
+        except Exception:
+            logger.warning("token-profiles feed unavailable this tick")
+        if self.gecko is not None:
+            # The early feed: every new Solana pool (pump.fun graduations
+            # included) minutes after creation, not just profiled tokens.
+            try:
+                stats["pools_new"] = self._absorb_mints(
+                    await self.gecko.new_solana_pool_mints()
+                )
+            except Exception:
+                logger.warning("geckoterminal new-pools feed unavailable this tick")
 
         boosted = set()
         if config.EXCLUDE_BOOSTED:
@@ -186,6 +208,7 @@ class Scanner:
 
             stats["signals"] += 1
             self.store.record_alert(mint)
+            self._record_signal(verdict)
 
             can_autobuy = (
                 settings["autobuy"]
@@ -205,6 +228,66 @@ class Scanner:
                                    "error": str(exc)})
             events.append({"type": "signal", "verdict": verdict})
         return events
+
+    # ---------- signal report card ----------
+
+    # How long after a signal each price checkpoint is due, and how long
+    # past due we keep looking for a price before declaring the token dead
+    # (no tradable pair left) and recording a total loss.
+    SIGNAL_HORIZONS = {"h1": 3600, "h6": 6 * 3600, "h24": 24 * 3600}
+    SIGNAL_DEAD_GRACE = 2 * 3600
+
+    def _record_signal(self, verdict: dict) -> None:
+        pair = verdict["pair"]
+        price0 = float(pair.get("priceUsd") or 0)
+        if price0 <= 0:
+            return
+        self.store.add_signal({
+            "mint": verdict["mint"],
+            "symbol": (pair.get("baseToken") or {}).get("symbol") or "?",
+            "pattern": verdict["patterns"][0]["pattern"] if verdict["patterns"] else "none",
+            "score": verdict["score"],
+            "price0": price0,
+            "ts": time.time(),
+            "h1": None, "h6": None, "h24": None,
+        })
+
+    async def _update_signal_log(self) -> None:
+        """Fill due price checkpoints so /trades can show how signals
+        actually performed. A token with no pair left after the grace
+        period is recorded at price 0 — a rug is a result, not a gap."""
+        now = time.time()
+        due_mints = set()
+        for entry in self.store.signal_log:
+            for key, delta in self.SIGNAL_HORIZONS.items():
+                if entry.get(key) is None and now >= entry["ts"] + delta:
+                    due_mints.add(entry["mint"])
+        if not due_mints:
+            return
+        pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID,
+                                                list(due_mints)[:30])
+        price_by_mint = {}
+        for pair in pairs:
+            mint = (pair.get("baseToken") or {}).get("address")
+            liq = (pair.get("liquidity") or {}).get("usd") or 0
+            current = price_by_mint.get(mint)
+            if current is None or liq > current[1]:
+                price_by_mint[mint] = (float(pair.get("priceUsd") or 0), liq)
+
+        changed = False
+        for entry in self.store.signal_log:
+            for key, delta in self.SIGNAL_HORIZONS.items():
+                if entry.get(key) is not None or now < entry["ts"] + delta:
+                    continue
+                found = price_by_mint.get(entry["mint"])
+                if found and found[0] > 0:
+                    entry[key] = found[0]
+                    changed = True
+                elif now >= entry["ts"] + delta + self.SIGNAL_DEAD_GRACE:
+                    entry[key] = 0.0  # no market left = -100%
+                    changed = True
+        if changed:
+            self.store.save()
 
     # ---------- on-demand scan (/scan) ----------
 

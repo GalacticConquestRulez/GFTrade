@@ -60,9 +60,13 @@ when something goes wrong.
   but private-key export is restricted to the first id (the primary owner).
 
 **Automated coin discovery ("find good coins")**
-- Rolling candidate pool from DexScreener's newest token profiles,
-  **re-checked every tick** — a token that was too young or too thin ten
-  minutes ago gets re-evaluated until it qualifies or ages out.
+- Two feeds into a rolling candidate pool, **re-checked every tick** — a
+  token that was too young or too thin ten minutes ago gets re-evaluated
+  until it qualifies or ages out:
+  - GeckoTerminal's new-pools feed: every fresh Solana pool (pump.fun
+    graduations included) within minutes of creation — the early feed.
+  - DexScreener's token profiles: tokens whose creators made a profile —
+    later, but carries tokens the pool feed has already rotated past.
 - Hard screens: age window, liquidity floor, liquidity/market-cap sanity
   band (the core anti-manipulation check), volume floor, organic-activity
   floors, wash-trading ratio cap, and exclusion of anything paying
@@ -84,6 +88,20 @@ when something goes wrong.
 - Signal cards with buy buttons; per-token mute; 24h re-alert cooldown.
 - Optional autobuy above a stricter score, with TP/SL/trailing management
   and Telegram notification of every action.
+- **Signal report card**: every signal's price is checkpointed 1h/6h/24h
+  later (a vanished market counts as −100%), and `/trades` shows
+  per-pattern hit rates and medians — tune thresholds on evidence, not
+  vibes.
+
+**Staged exits**
+- At take-profit, only `tp_sell_pct` (default 50%) is sold; the remainder
+  becomes a *runner* protected by a `runner_trailing_pct` (default 20%)
+  trailing stop off the peak that never **triggers** below the entry
+  price. You bank the base hit and keep exposure to the runners that go
+  5–10x. Set `tp_sell_pct` to 100 in `/settings` for classic
+  all-out-at-TP behavior. (Honesty note: the floor governs when the exit
+  *fires* — a violent one-tick crash can still fill below entry, because
+  these are monitored stops, not resting orders.)
 
 ---
 

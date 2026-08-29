@@ -174,13 +174,26 @@ def sell_receipt(result: dict) -> str:
 
 
 def exit_event_text(event: dict) -> str:
-    emoji = {"take_profit": "🎯", "stop_loss": "🛑", "trailing_stop": "📉"}.get(
-        event["reason"], "🔔"
-    )
+    emoji = {"take_profit": "🎯", "stop_loss": "🛑", "trailing_stop": "📉",
+             "runner_stop": "🏁"}.get(event["reason"], "🔔")
     return (
         f"{emoji} [{mode_banner(event['dry_run'])}] <b>{esc(event['symbol'])}</b> closed: "
         f"{esc(event['reason'])} — {event['pnl_sol']:+.4f} SOL ({fmt_pct(event['pnl_pct'])})"
     )
+
+
+def partial_exit_text(event: dict) -> str:
+    lines = [
+        f"🎯 [{mode_banner(event['dry_run'])}] <b>Took {event['pct']:g}% of "
+        f"{esc(event['symbol'])}</b> at {fmt_price(event['price_usd'])} "
+        f"(+{fmt_sol(event['sol_out'])})",
+        f"🏃 Letting the rest run — {event['runner_trail_pct']:g}% trailing stop "
+        "off the peak, floored at breakeven.",
+    ]
+    if event.get("signature"):
+        url = constants.SOLSCAN_TX_URL.format(sig=event["signature"])
+        lines.append(f'🧾 <a href="{url}">transaction</a>')
+    return "\n".join(lines)
 
 
 def exit_error_text(event: dict) -> str:
@@ -226,7 +239,8 @@ def positions_text(positions: dict, best_pairs: dict, sol_price: float) -> str:
     return "\n\n".join(blocks)
 
 
-def trades_text(summary: dict, last_trades: list, dry_run: bool) -> str:
+def trades_text(summary: dict, last_trades: list, dry_run: bool,
+                signal_log: list = None) -> str:
     lines = [f"<b>Performance</b> [{mode_banner(dry_run)}]"]
     win_rate = f"{summary['win_rate'] * 100:.0f}%" if summary["win_rate"] is not None else "—"
     lines.append(
@@ -244,7 +258,54 @@ def trades_text(summary: dict, last_trades: list, dry_run: bool) -> str:
                 f"{emoji} {esc(trade['symbol'])}: {esc(trade['result'])} "
                 f"{trade['pnl_sol']:+.4f} SOL ({fmt_pct(trade['pnl_pct'])})"
             )
+    report = signal_report_lines(signal_log or [])
+    if report:
+        lines.append("")
+        lines.extend(report)
     return "\n".join(lines)
+
+
+def _signal_changes(entries: list, key: str) -> list:
+    """Percent change from signal price at one horizon, for filled entries.
+    A recorded price of 0 means the market vanished (rug/delist) = -100%."""
+    changes = []
+    for entry in entries:
+        price = entry.get(key)
+        price0 = entry.get("price0") or 0
+        if price is None or price0 <= 0:
+            continue
+        changes.append((price - price0) / price0 * 100)
+    return changes
+
+
+def signal_report_lines(signal_log: list) -> list:
+    """Per-pattern hit rates: how signal prices moved 1h/24h later."""
+    import statistics
+
+    if not signal_log:
+        return []
+    by_pattern = {}
+    for entry in signal_log:
+        by_pattern.setdefault(entry.get("pattern", "none"), []).append(entry)
+
+    lines = [f"📡 <b>Signal report card</b> — last {len(signal_log)} signals"]
+    any_data = False
+    for pattern, entries in sorted(by_pattern.items(), key=lambda kv: -len(kv[1])):
+        parts = []
+        for key, label in (("h1", "1h"), ("h24", "24h")):
+            changes = _signal_changes(entries, key)
+            if not changes:
+                continue
+            up = sum(1 for c in changes if c > 0) / len(changes) * 100
+            parts.append(f"{label}: {up:.0f}% up (med {statistics.median(changes):+.0f}%)")
+        if parts:
+            any_data = True
+            lines.append(f"· {esc(pattern)} ({len(entries)}): " + " · ".join(parts))
+        else:
+            lines.append(f"· {esc(pattern)} ({len(entries)}): collecting data…")
+    if not any_data:
+        lines.append("<i>First results appear ~1h after each signal.</i>")
+    return lines
 
 
 def safety_flag(verdict: dict) -> str:
@@ -334,8 +395,11 @@ def settings_text(settings: dict, dry_run: bool) -> str:
         "",
         f"💰 Buy presets: {presets} SOL",
         f"📉 Slippage: {settings['slippage_bps'] / 100:g}%",
-        f"🎯 Take profit: {settings['take_profit_pct']:g}% · 🛑 Stop loss: {settings['stop_loss_pct']:g}%",
-        f"📉 Trailing stop: {trailing}",
+        f"🎯 Take profit: sell {settings.get('tp_sell_pct', 100):g}% at "
+        f"+{settings['take_profit_pct']:g}% · 🛑 Stop loss: {settings['stop_loss_pct']:g}%",
+        f"🏃 Runner (after TP): trails {settings.get('runner_trailing_pct', 20):g}% "
+        "off peak, breakeven floor",
+        f"📉 Trailing stop (from entry): {trailing}",
         f"📂 Max positions: {settings['max_positions']}",
         "",
         "Dry-run vs live is set by the DRY_RUN environment variable, not here — "

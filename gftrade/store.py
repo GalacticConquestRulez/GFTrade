@@ -22,6 +22,7 @@ _SCHEMA = {
     "closed_trades": [],
     "alerts": {},            # mint -> last alert unix ts (cooldown tracking)
     "muted": {},             # mint -> True (never alert again)
+    "signal_log": [],        # signal outcomes for the report card (scanner.py)
     "stats": {
         "realized_pnl_sol": 0.0,
         "sim_balance_sol": config.SIM_START_BALANCE_SOL,
@@ -115,6 +116,20 @@ class Store:
         hours = hours if hours is not None else config.ALERT_COOLDOWN_HOURS
         ts = self.data["alerts"].get(mint)
         return ts is not None and (time.time() - ts) < hours * 3600
+
+    # ---------- signal report card ----------
+
+    SIGNAL_LOG_CAP = 300
+
+    @property
+    def signal_log(self) -> list:
+        return self.data["signal_log"]
+
+    def add_signal(self, entry: dict) -> None:
+        self.data["signal_log"].append(entry)
+        if len(self.data["signal_log"]) > self.SIGNAL_LOG_CAP:
+            self.data["signal_log"] = self.data["signal_log"][-self.SIGNAL_LOG_CAP:]
+        self.save()
 
     def mute(self, mint: str) -> None:
         self.data["muted"][mint] = True

@@ -97,6 +97,8 @@ def render_event(deps: Deps, event: dict):
         )
     if kind == "exit":
         return fmt.exit_event_text(event), None
+    if kind == "exit_partial":
+        return fmt.partial_exit_text(event), None
     if kind == "exit_error":
         return fmt.exit_error_text(event), None
     if kind == "scan_error":

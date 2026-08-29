@@ -92,6 +92,7 @@ async def test_aged_out_pair_leaves_pool(store):
 
 
 async def test_exit_events_flow_through_tick(store):
+    store.set_setting("tp_sell_pct", 100.0)  # classic full close at TP
     scanner, dex, engine = build_scanner(store, {MINT_A: make_pair()})
     await engine.buy(MINT_A, 0.2)
     tp = store.get_position(MINT_A)["tp_price_usd"]
