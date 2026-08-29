@@ -8,11 +8,14 @@ a handful of batched token lookups per tick) stays far under both, but we
 still back off once on a 429 to be a good citizen.
 """
 import asyncio
+import logging
 import time
 
 import httpx
 
 from .. import constants
+
+logger = logging.getLogger(__name__)
 
 BASE = "https://api.dexscreener.com"
 TOKEN_BATCH_SIZE = 30  # /tokens/v1 accepts up to 30 comma-separated addresses
@@ -85,11 +88,20 @@ class DexScreener:
     # ---------- reference prices ----------
 
     async def sol_price_usd(self) -> float:
-        """SOL/USD from the most liquid stable-quoted SOL pair, cached 60s."""
+        """SOL/USD from the most liquid stable-quoted SOL pair, cached 60s.
+        On a fetch failure the last known price is served however old it is
+        (with a warning) — SOL barely moves on the timescale of an outage,
+        and a stale conversion beats a dead exit check."""
         price, fetched_at = self._sol_price_cache
         if time.time() - fetched_at < 60 and price > 0:
             return price
-        pairs = await self.pairs_for_token(constants.CHAIN_ID, constants.SOL_MINT)
+        try:
+            pairs = await self.pairs_for_token(constants.CHAIN_ID, constants.SOL_MINT)
+        except Exception:
+            if price > 0:
+                logger.warning("SOL price fetch failed; serving cached value")
+                return price
+            raise
         stable_quoted = [
             p for p in pairs
             if (p.get("baseToken") or {}).get("address") == constants.SOL_MINT

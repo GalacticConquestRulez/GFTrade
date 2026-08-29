@@ -75,9 +75,10 @@ async def run() -> None:
     safety = SafetyChecker(rpc, rugcheck)
     factors = FactorLog()
     prices = PriceHistory()
+    gecko = GeckoTerminal(http)
     engine = TradingEngine(store, dex, jupiter, rpc, keypair,
-                           factors=factors, price_history=prices)
-    scanner = Scanner(store, dex, engine, safety, gecko=GeckoTerminal(http),
+                           factors=factors, price_history=prices, gecko=gecko)
+    scanner = Scanner(store, dex, engine, safety, gecko=gecko,
                       factors=factors, prices=prices)
     deps = Deps(store=store, dex=dex, engine=engine, scanner=scanner,
                 safety=safety, rpc=rpc, keypair=keypair, factors=factors)

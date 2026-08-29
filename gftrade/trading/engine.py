@@ -39,7 +39,8 @@ def price_in_sol(pair: dict, sol_price_usd: float) -> float:
 
 class TradingEngine:
     def __init__(self, store, dex, jupiter=None, rpc=None, keypair=None,
-                 dry_run: bool = None, factors=None, price_history=None):
+                 dry_run: bool = None, factors=None, price_history=None,
+                 gecko=None):
         self.store = store
         self.dex = dex
         self.jupiter = jupiter
@@ -48,6 +49,7 @@ class TradingEngine:
         self.dry_run = config.DRY_RUN if dry_run is None else dry_run
         self.factors = factors              # FactorLog, optional
         self.price_history = price_history  # PriceHistory, optional
+        self.gecko = gecko                  # GeckoTerminal price failover, optional
 
     # ---------- balances ----------
 
@@ -331,7 +333,27 @@ class TradingEngine:
         mints = list(self.store.positions.keys())
         if not mints:
             return []
-        pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID, mints)
+        try:
+            pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID, mints)
+        except Exception:
+            # DexScreener down or rate-limited: exits are the one job that
+            # must not pause, so fall back to GeckoTerminal prices wrapped
+            # as minimal synthetic pairs. If that fails too, re-raise and
+            # the scanner reports it.
+            if self.gecko is None:
+                raise
+            prices = await self.gecko.simple_token_prices(mints)
+            sol_price = await self.dex.sol_price_usd()
+            pairs = [
+                {
+                    "baseToken": {"address": mint},
+                    "quoteToken": {"symbol": "SOL"},
+                    "priceUsd": str(price),
+                    "priceNative": str(price / sol_price if sol_price > 0 else 0),
+                    "liquidity": {"usd": 0},
+                }
+                for mint, price in prices.items() if price > 0
+            ]
         best_by_mint = {}
         for pair in pairs:
             mint = (pair.get("baseToken") or {}).get("address")

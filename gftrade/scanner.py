@@ -23,6 +23,7 @@ import time
 
 from . import config, constants
 from .discovery import filters, patterns, scoring
+from .discovery import safety as safety_mod
 from .discovery.trend import PriceHistory
 
 logger = logging.getLogger(__name__)
@@ -96,11 +97,14 @@ class Scanner:
             "breakdown": {},
         }
         verdict["extension_pct"] = self.prices.extension_pct(verdict["mint"])
+        verdict["market_score"] = scoring.market_score_pair(pair)
+        verdict["risk_tier"] = "unverified"
         if not ok:
             return verdict
         strict = self.store.settings["security_strict"]
         verdict["safety"] = await self.safety.check(verdict["mint"])
         verdict["safety_ok"] = verdict["safety"].passes(strict)
+        verdict["risk_tier"] = safety_mod.risk_tier(verdict["safety"])
         verdict["patterns"] = patterns.scan(pair)
         verdict["score"], verdict["breakdown"] = scoring.score_pair(
             pair, verdict["safety"], strict
@@ -310,9 +314,37 @@ class Scanner:
             "h1": None, "h6": None, "h24": None,
         })
 
+    async def _fetch_prices(self, mints: list) -> dict:
+        """Price-only lookups for checkpoints: GeckoTerminal first (spares
+        DexScreener's budget for screening and exits), DexScreener for
+        whatever GT doesn't cover. A mint only counts as dead when BOTH
+        sources fail to price it past the grace window."""
+        prices = {}
+        if self.gecko is not None:
+            try:
+                prices.update(await self.gecko.simple_token_prices(mints))
+            except Exception:
+                logger.warning("gecko price batch failed; using dexscreener only")
+        missing = [m for m in mints if m not in prices]
+        if missing:
+            try:
+                pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID, missing)
+            except Exception:
+                logger.warning("dexscreener price batch failed; partial prices")
+                return prices
+            best = {}
+            for pair in pairs:
+                mint = (pair.get("baseToken") or {}).get("address")
+                liq = (pair.get("liquidity") or {}).get("usd") or 0
+                current = best.get(mint)
+                if current is None or liq > current[1]:
+                    best[mint] = (float(pair.get("priceUsd") or 0), liq)
+            prices.update({m: p for m, (p, _) in best.items() if p > 0})
+        return prices
+
     async def _update_signal_log(self) -> None:
         """Fill due price checkpoints so /trades can show how signals
-        actually performed. A token with no pair left after the grace
+        actually performed. A token with no price left after the grace
         period is recorded at price 0 — a rug is a result, not a gap."""
         now = time.time()
         due_mints = set()
@@ -322,24 +354,16 @@ class Scanner:
                     due_mints.add(entry["mint"])
         if not due_mints:
             return
-        pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID,
-                                                list(due_mints)[:30])
-        price_by_mint = {}
-        for pair in pairs:
-            mint = (pair.get("baseToken") or {}).get("address")
-            liq = (pair.get("liquidity") or {}).get("usd") or 0
-            current = price_by_mint.get(mint)
-            if current is None or liq > current[1]:
-                price_by_mint[mint] = (float(pair.get("priceUsd") or 0), liq)
+        prices = await self._fetch_prices(list(due_mints)[:30])
 
         changed = False
         for entry in self.store.signal_log:
             for key, delta in self.SIGNAL_HORIZONS.items():
                 if entry.get(key) is not None or now < entry["ts"] + delta:
                     continue
-                found = price_by_mint.get(entry["mint"])
-                if found and found[0] > 0:
-                    entry[key] = found[0]
+                price = prices.get(entry["mint"])
+                if price is not None and price > 0:
+                    entry[key] = price
                     changed = True
                 elif now >= entry["ts"] + delta + self.SIGNAL_DEAD_GRACE:
                     entry[key] = 0.0  # no market left = -100%
@@ -355,15 +379,7 @@ class Scanner:
         mints = self.factors.due_checkpoint_mints(limit=30)
         if not mints:
             return
-        pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID, mints)
-        prices = {}
-        for pair in pairs:
-            mint = (pair.get("baseToken") or {}).get("address")
-            liq = (pair.get("liquidity") or {}).get("usd") or 0
-            current = prices.get(mint)
-            if current is None or liq > current[1]:
-                prices[mint] = (float(pair.get("priceUsd") or 0), liq)
-        self.factors.fill_checkpoints({m: p for m, (p, _) in prices.items()})
+        self.factors.fill_checkpoints(await self._fetch_prices(mints))
 
     # ---------- on-demand scan (/scan) ----------
 
@@ -427,8 +443,13 @@ class Scanner:
                 )
                 near_misses.append(verdict)
 
-        screened.sort(key=lambda v: (not v["safety_ok"], -v["score"]))
-        near_misses.sort(key=lambda v: -v["score"])
+        # Sort: risk tier first (safe -> unverified -> risky), then pure
+        # market quality inside each tier — a risky coin with a hot chart
+        # can no longer sit shoulder-to-shoulder with a safe one.
+        tier_rank = {"safe": 0, "unverified": 1, "risky": 2}
+        screened.sort(key=lambda v: (tier_rank.get(v.get("risk_tier"), 1),
+                                     -v.get("market_score", v["score"])))
+        near_misses.sort(key=lambda v: -v.get("market_score", v["score"]))
         verdicts = screened[:top_n]
         if len(verdicts) < self.SCAN_MIN_LIST:
             verdicts += near_misses[:self.SCAN_MIN_LIST - len(verdicts)]

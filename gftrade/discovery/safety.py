@@ -82,6 +82,20 @@ class SafetyReport:
         return " | ".join(parts)
 
 
+def risk_tier(report) -> str:
+    """Three-way risk classification, independent of the user's strict
+    setting: 'safe' = every check proven good; 'risky' = at least one
+    check known-bad; 'unverified' = nothing known-bad but not all proven
+    (or no report at all)."""
+    if report is None:
+        return "unverified"
+    if report.passes(strict=True):
+        return "safe"
+    if not report.passes(strict=False):
+        return "risky"
+    return "unverified"
+
+
 class SafetyChecker:
     # Seconds between uncached checks. Each check is 2 RPC calls; free/public
     # RPCs rate-limit hard, and a 429 shows up to the user as ❓ unverified —

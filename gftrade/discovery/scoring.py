@@ -111,6 +111,23 @@ def _safety(report, strict: bool) -> float:
 
 
 WEIGHTS = {"momentum": 25, "volume": 20, "organic": 20, "liquidity": 15, "safety": 20}
+MARKET_WEIGHTS = {"momentum": 25, "volume": 20, "organic": 20, "liquidity": 15}
+
+
+def market_score_pair(pair: dict) -> int:
+    """Pure market quality on 0-100 — the same four market components as
+    the combined score, renormalized WITHOUT safety. Risk is reported
+    separately (a tier), so a hot chart can't launder a risky coin into
+    the same number as a safe one."""
+    components = {
+        "momentum": _momentum(pair),
+        "volume": _volume(pair),
+        "organic": _organic(pair),
+        "liquidity": _liquidity(pair),
+    }
+    points = sum(MARKET_WEIGHTS[name] * value for name, value in components.items())
+    total = sum(MARKET_WEIGHTS.values())
+    return max(0, min(100, int(round(points * 100 / total))))
 
 
 def score_pair(pair: dict, safety_report=None, strict: bool = True) -> tuple:

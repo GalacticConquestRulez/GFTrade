@@ -86,9 +86,12 @@ when something goes wrong.
   simply pull the liquidity. In strict mode (default) a token whose LP
   status can't be verified is rejected — no lock proof, no trade.
 - `/scan` lists every candidate passing the market screens, paged 5 at a
-  time with ◀️ ▶️ arrows: fully-safe tokens (✅ renounced, no freeze,
-  holder-sane, LP locked) rank first by score, the rest follow with a
-  badge saying exactly why not (🚫 LP 5%, 🚫 mint active, ❓ unverified).
+  time with ◀️ ▶️ arrows, sorted by risk tier first — 🟢 safe (everything
+  proven, LP lock included), then 🟡 unverified, then 🔴 risky — and by
+  **pure market-quality score** (no safety points) within each tier, so a
+  risky coin with a hot chart can't share a number with a safe one. Each
+  non-safe row carries the exact reason (🚫 LP 5%, 🚫 mint active,
+  ❓ unverified).
   By default only ✅ tokens alert; the `alert_unverified` setting extends
   alerts to ❓-only coins (nothing known-bad, some checks incomplete),
   clearly labeled for small manual flips. Known-bad (🚫) tokens never
@@ -309,6 +312,19 @@ new-pools ✓ ∅ ✗) — the first place to look when results seem thin.
 Add your own pattern: write a function in `discovery/patterns.py` with
 signature `(pair: dict) -> (triggered, confidence 0-1, name)` using any
 fields from DexScreener's pair object, append it to `ALL_PATTERNS`.
+
+## Two price sources
+
+Market data comes from two independent keyless APIs with distinct jobs:
+DexScreener carries screening and exit checks (it's the only one with the
+txn/volume detail the filters need); GeckoTerminal carries the background
+price checkpoints (signal report card, factor log) so that load never
+competes with exits — and acts as the automatic failover when DexScreener
+rate-limits or errors, so stop-losses keep firing through an outage. A
+token counts as dead for checkpoint purposes only when *both* sources
+fail to price it past the grace window. (Other aggregators — dex.guru,
+Defined.fi, GMGN, Ave — need API keys or have no public API, so they're
+deliberately not integrated.)
 
 ## Trend gating, factor logging, and analysis
 

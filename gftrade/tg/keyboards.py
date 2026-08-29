@@ -80,7 +80,8 @@ def scan_page_kb(page_verdicts: list, page: int, total_pages: int,
         else:
             badge = "⚠️"
         label = (f"{badge} #{start_rank + offset} "
-                 f"{(base.get('symbol') or '?')[:12]} · {verdict['score']}/100")
+                 f"{(base.get('symbol') or '?')[:12]} · "
+                 f"{verdict.get('market_score', verdict['score'])}/100")
         rows.append([InlineKeyboardButton(label, callback_data=f"r:{base.get('address')}")])
     nav = []
     if page > 0:

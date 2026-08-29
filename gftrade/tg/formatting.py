@@ -409,6 +409,8 @@ def scan_page_text(verdicts: list, page: int, page_size: int,
             "safe. A free Helius/QuickNode RPC usually fixes this.</i>"
         )
     lines.append("")
+    lines.insert(2, "<i>Sorted: 🟢 safe → 🟡 unverified → 🔴 risky, best "
+                    "market quality first within each.</i>")
     for offset, verdict in enumerate(verdicts[start:start + page_size]):
         pair = verdict["pair"]
         base = pair.get("baseToken") or {}
@@ -416,7 +418,7 @@ def scan_page_text(verdicts: list, page: int, page_size: int,
         lines.append(
             f"{safety_flag(verdict)} <b>#{start + offset + 1} "
             f"{esc(base.get('symbol') or '?')}</b> — "
-            f"{verdict['score']}/100 · {esc(pattern)}\n"
+            f"market {verdict.get('market_score', verdict['score'])}/100 · {esc(pattern)}\n"
             f"    liq {fmt_usd((pair.get('liquidity') or {}).get('usd'))} · "
             f"MC {fmt_usd(pair.get('marketCap') or pair.get('fdv'))} · "
             f"1h {fmt_pct((pair.get('priceChange') or {}).get('h1', 0) or 0)} · "
