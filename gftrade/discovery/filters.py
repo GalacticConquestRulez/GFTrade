@@ -36,6 +36,7 @@ def screen_pair(pair: dict, boosted_addresses: set = None, now_ms: float = None,
     min_volume_h1 = overrides.get("min_volume_h1_usd", config.MIN_VOLUME_H1_USD)
     min_buys_h1 = overrides.get("min_buys_h1", config.MIN_BUYS_H1)
     max_age_hours = overrides.get("max_pair_age_hours", config.MAX_PAIR_AGE_HOURS)
+    min_age_minutes = overrides.get("min_pair_age_minutes", config.MIN_PAIR_AGE_MINUTES)
 
     chain_id = pair.get("chainId")
     base_token = pair.get("baseToken") or {}
@@ -58,8 +59,8 @@ def screen_pair(pair: dict, boosted_addresses: set = None, now_ms: float = None,
     age_h = pair_age_hours(pair, now_ms)
     if age_h < 0:
         reasons.append("no pair creation timestamp")
-    elif age_h * 60 < config.MIN_PAIR_AGE_MINUTES:
-        reasons.append(f"pair only {age_h * 60:.0f}m old, min {config.MIN_PAIR_AGE_MINUTES}m")
+    elif age_h * 60 < min_age_minutes:
+        reasons.append(f"pair only {age_h * 60:.0f}m old, min {min_age_minutes:g}m")
     elif age_h > max_age_hours:
         reasons.append(f"pair age {age_h:.1f}h exceeds max {max_age_hours:g}h")
 

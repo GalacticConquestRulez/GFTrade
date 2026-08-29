@@ -431,7 +431,8 @@ def settings_text(settings: dict, dry_run: bool) -> str:
         f"🔬 Screens: liq ≥ {fmt_usd(settings.get('min_liquidity_usd', 0))} · "
         f"1h vol ≥ {fmt_usd(settings.get('min_volume_h1_usd', 0))} · "
         f"1h buys ≥ {settings.get('min_buys_h1', 0):g} · "
-        f"age ≤ {settings.get('max_pair_age_hours', 0):g}h",
+        f"age {settings.get('min_pair_age_minutes', 0):g}m–"
+        f"{settings.get('max_pair_age_hours', 0):g}h",
         "",
         "Dry-run vs live is set by the DRY_RUN environment variable, not here — "
         "changing money-mode should require touching the deployment.",

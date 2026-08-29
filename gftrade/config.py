@@ -164,4 +164,9 @@ DEFAULT_SETTINGS = {
     "min_volume_h1_usd": float(MIN_VOLUME_H1_USD),
     "min_buys_h1": MIN_BUYS_H1,
     "max_pair_age_hours": float(MAX_PAIR_AGE_HOURS),
+    # Minimum pair age before a coin can screen (and thus alert/autobuy).
+    # 0 disables the delay entirely. The first minutes of a pair's life are
+    # peak rug/honeypot territory — lowering this trades safety margin for
+    # earlier entries; autobuy still requires every safety check to pass.
+    "min_pair_age_minutes": float(MIN_PAIR_AGE_MINUTES),
 }

@@ -108,3 +108,43 @@ def test_start_text_shows_stats_feeds_and_version():
     assert "v1.3.0" in text
     assert "118 checked" in text and "2 passed screens" in text
     assert "profiles ✓" in text and "new-pools ✗" in text
+
+
+def test_min_age_override_including_zero():
+    young = make_pair(age_hours=0.1)  # 6 minutes old
+    ok, reasons = filters.screen_pair(young)
+    assert not ok and any("old, min" in r for r in reasons)
+    assert filters.screen_pair(young, overrides={"min_pair_age_minutes": 5.0})[0]
+    brand_new = make_pair(age_hours=0.01)  # ~36 seconds
+    assert filters.screen_pair(brand_new, overrides={"min_pair_age_minutes": 0.0})[0]
+
+
+async def test_lowered_min_age_enables_autobuy_on_young_coins(store):
+    """The reported gap: strong coins under 20 minutes old never reached
+    autobuy. With the setting lowered they must flow all the way through."""
+    from gftrade.trading.engine import TradingEngine as TE
+
+    young = make_strong_pair(age_hours=0.15)  # 9 minutes old
+    dex = FakeDex(pairs_by_mint={MINT_A: young},
+                  profiles=[{"chainId": "solana", "tokenAddress": MINT_A}])
+    engine = TE(store, dex, dry_run=True)
+    scanner = Scanner(store, dex, engine, FakeSafety())
+    store.set_setting("autobuy", True)
+
+    # default 20m minimum: screened out, no autobuy
+    events = await scanner.tick()
+    assert [e for e in events if e["type"] in ("signal", "autobuy")] == []
+    assert store.positions == {}
+
+    # lowered to 5m: the same coin autobuys on the next sweep
+    store.set_setting("min_pair_age_minutes", 5.0)
+    events = await scanner.tick()
+    assert len([e for e in events if e["type"] == "autobuy"]) == 1
+    assert store.get_position(MINT_A) is not None
+
+
+def test_min_age_parser_bounds():
+    assert _parse_setting("min_pair_age_minutes", "0") == 0.0
+    assert _parse_setting("min_pair_age_minutes", "10") == 10.0
+    with pytest.raises(ValueError):
+        _parse_setting("min_pair_age_minutes", "500")

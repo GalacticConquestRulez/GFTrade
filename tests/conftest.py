@@ -46,14 +46,16 @@ def make_pair(mint=MINT_A, symbol="TEST", price_usd=0.001, price_native=None,
     return pair
 
 
-def make_strong_pair(mint=MINT_A, symbol="MOON"):
+def make_strong_pair(mint=MINT_A, symbol="MOON", **overrides):
     """A pair that also clears the default alert/autobuy score thresholds."""
-    return make_pair(
+    kwargs = dict(
         mint=mint, symbol=symbol, liquidity=60_000, market_cap=400_000,
         buys_5m=25, sells_5m=10, buys_h1=200, sells_h1=120,
         vol_m5=12_000, vol_h1=30_000, vol_h24=200_000,
         chg_m5=4.0, chg_h1=25.0, chg_h6=25.0,
     )
+    kwargs.update(overrides)
+    return make_pair(**kwargs)
 
 
 GOOD_SAFETY = SafetyReport(mint=MINT_A, decimals=9, mint_renounced=True,

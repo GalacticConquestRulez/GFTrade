@@ -124,7 +124,8 @@ def settings_kb(settings: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("✏️ Min liquidity $", callback_data="ste:min_liquidity_usd"),
          InlineKeyboardButton("✏️ Min 1h volume $", callback_data="ste:min_volume_h1_usd")],
         [InlineKeyboardButton("✏️ Min 1h buys", callback_data="ste:min_buys_h1"),
-         InlineKeyboardButton("✏️ Max age (hours)", callback_data="ste:max_pair_age_hours")],
+         InlineKeyboardButton("✏️ Min age (min)", callback_data="ste:min_pair_age_minutes"),
+         InlineKeyboardButton("✏️ Max age (h)", callback_data="ste:max_pair_age_hours")],
         [InlineKeyboardButton("« Menu", callback_data="m")],
     ])
 

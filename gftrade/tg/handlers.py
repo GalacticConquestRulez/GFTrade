@@ -358,6 +358,11 @@ def _parse_setting(key: str, raw: str):
         if not 1 <= value <= 168:
             raise ValueError("Max pair age must be 1-168 hours.")
         return value
+    if key == "min_pair_age_minutes":
+        value = float(raw)
+        if not 0 <= value <= 120:
+            raise ValueError("Min pair age must be 0-120 minutes (0 = no delay).")
+        return value
     raise ValueError("This setting can't be edited here.")
 
 
@@ -381,6 +386,10 @@ SETTING_PROMPTS = {
     "min_buys_h1": "Send new minimum buys in the last hour (current: {v})",
     "max_pair_age_hours": "Send new maximum pair age in hours — higher keeps "
                           "coins in view longer (current: {v}h)",
+    "min_pair_age_minutes": "Send new minimum pair age in minutes before a coin "
+                            "can screen/alert/autobuy — 0 disables the delay. "
+                            "⚠️ The first minutes are peak rug territory "
+                            "(current: {v}m)",
 }
 
 
