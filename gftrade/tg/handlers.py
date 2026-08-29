@@ -84,7 +84,7 @@ async def render_token_view(deps, mint: str):
     verdict = await deps.scanner.evaluate_pair(pair, set())
     text = fmt.token_card(
         pair, verdict["safety"], verdict["score"], verdict["breakdown"],
-        verdict["patterns"],
+        verdict["patterns"], extension_pct=verdict.get("extension_pct"),
     )
     if not verdict["screened_ok"]:
         shown = "\n".join(f"  · {fmt.esc(r)}" for r in verdict["reject_reasons"][:4])
@@ -265,6 +265,18 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @authorized_only
+async def cmd_factors(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    deps = deps_of(context)
+    if deps.factors is None:
+        await update.message.reply_text("Factor logging isn't enabled in this build.")
+        return
+    from ..analysis import compute_report
+    report = compute_report(deps.factors.all_rows())
+    await update.message.reply_text(f"<pre>{fmt.esc(report)}</pre>",
+                                    parse_mode=ParseMode.HTML)
+
+
+@authorized_only
 async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deps = deps_of(context)
     mint = extract_mint(" ".join(context.args or []))
@@ -369,6 +381,11 @@ def _parse_setting(key: str, raw: str):
             raise ValueError("Autobuy min age must be 0-240 minutes "
                              "(0 = same as the global min age).")
         return value
+    if key == "max_entry_extension_pct":
+        value = float(raw)
+        if not 0 <= value <= 500:
+            raise ValueError("Max entry extension must be 0-500% (0 = gate off).")
+        return value
     raise ValueError("This setting can't be edited here.")
 
 
@@ -400,6 +417,9 @@ SETTING_PROMPTS = {
                                "may act — alerts still fire from the global min "
                                "age, so you can flip young coins manually while "
                                "the bot waits. 0 = no extra wait (current: {v}m)",
+    "max_entry_extension_pct": "Block alerts/autobuy when price is already this "
+                               "% above its own 1h low — late entries buy tops. "
+                               "0 disables the gate (current: {v}%)",
 }
 
 

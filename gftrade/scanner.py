@@ -23,6 +23,7 @@ import time
 
 from . import config, constants
 from .discovery import filters, patterns, scoring
+from .discovery.trend import PriceHistory
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +32,15 @@ EVAL_BATCH_PER_TICK = 120      # pool mints re-checked per tick (4 DexScreener c
 
 
 class Scanner:
-    def __init__(self, store, dex, engine, safety_checker, gecko=None):
+    def __init__(self, store, dex, engine, safety_checker, gecko=None,
+                 factors=None, prices=None):
         self.store = store
         self.dex = dex
         self.engine = engine
         self.safety = safety_checker
         self.gecko = gecko  # GeckoTerminal new-pools feed (optional)
+        self.factors = factors  # FactorLog (optional)
+        self.prices = prices or PriceHistory()
         # mint -> first_seen ts. In-memory only: after a restart the feeds
         # repopulate it within a few ticks.
         self.pool = {}
@@ -91,6 +95,7 @@ class Scanner:
             "score": 0,
             "breakdown": {},
         }
+        verdict["extension_pct"] = self.prices.extension_pct(verdict["mint"])
         if not ok:
             return verdict
         strict = self.store.settings["security_strict"]
@@ -101,6 +106,16 @@ class Scanner:
             pair, verdict["safety"], strict
         )
         return verdict
+
+    def _too_extended(self, verdict: dict) -> bool:
+        """Trend-stage gate: price already far above its own recent low is
+        a late entry — the setup that buys a pump's top. Unknown extension
+        (thin history) passes: the min-age screen already provides some
+        observation runway, and refusing to act on missing data here would
+        silence the scanner after every restart."""
+        limit = self.store.settings.get("max_entry_extension_pct") or 0
+        extension = verdict.get("extension_pct")
+        return bool(limit) and extension is not None and extension > limit
 
     def _qualifies(self, verdict: dict) -> bool:
         """Alert gate. Fully-safe (✅) coins always qualify on pattern+score.
@@ -119,6 +134,7 @@ class Scanner:
             and safety_acceptable
             and verdict["patterns"]
             and verdict["score"] >= settings["min_alert_score"]
+            and not self._too_extended(verdict)
         )
 
     # ---------- the tick ----------
@@ -155,6 +171,10 @@ class Scanner:
             await self._update_signal_log()
         except Exception:
             logger.exception("signal log update failed")
+        try:
+            await self._update_factor_checkpoints()
+        except Exception:
+            logger.exception("factor checkpoint update failed")
 
         stats["pool"] = len(self.pool)
         self.last_tick_at = time.time()
@@ -208,6 +228,12 @@ class Scanner:
                 if current is None or liq > ((current.get("liquidity") or {}).get("usd") or 0):
                     best_by_mint[mint] = pair
 
+        # Feed the rolling price history from everything we just fetched —
+        # this is the data the extension gate and vol-scaled exits run on.
+        for mint, pair in best_by_mint.items():
+            self.prices.record(mint, float(pair.get("priceUsd") or 0))
+        self.prices.prune()
+
         now = time.time()
         for mint in batch:
             pair = best_by_mint.get(mint)
@@ -222,6 +248,11 @@ class Scanner:
 
             stats["checked"] += 1
             verdict = await self.evaluate_pair(pair, boosted)
+            if self.factors is not None:
+                try:  # every evaluated candidate is logged, passed or failed
+                    self.factors.log_snapshot(verdict)
+                except Exception:
+                    logger.exception("factor logging failed")
             if verdict["screened_ok"]:
                 stats["passed_screen"] += 1
             if not self._qualifies(verdict):
@@ -316,6 +347,24 @@ class Scanner:
         if changed:
             self.store.save()
 
+    async def _update_factor_checkpoints(self) -> None:
+        """One batched price fetch per discovery tick fills the factor
+        log's due 1h/6h/24h outcome checkpoints."""
+        if self.factors is None:
+            return
+        mints = self.factors.due_checkpoint_mints(limit=30)
+        if not mints:
+            return
+        pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID, mints)
+        prices = {}
+        for pair in pairs:
+            mint = (pair.get("baseToken") or {}).get("address")
+            liq = (pair.get("liquidity") or {}).get("usd") or 0
+            current = prices.get(mint)
+            if current is None or liq > current[1]:
+                prices[mint] = (float(pair.get("priceUsd") or 0), liq)
+        self.factors.fill_checkpoints({m: p for m, (p, _) in prices.items()})
+
     # ---------- on-demand scan (/scan) ----------
 
     SCAN_MIN_LIST = 10  # /scan always tries to show at least this many, ranked
@@ -358,6 +407,9 @@ class Scanner:
                 liq = (pair.get("liquidity") or {}).get("usd") or 0
                 if current is None or liq > ((current.get("liquidity") or {}).get("usd") or 0):
                     best_by_mint[mint] = pair
+
+            for mint, pair in best_by_mint.items():
+                self.prices.record(mint, float(pair.get("priceUsd") or 0))
 
             strict = self.store.settings["security_strict"]
             evaluated = len(best_by_mint)

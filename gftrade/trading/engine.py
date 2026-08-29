@@ -39,13 +39,15 @@ def price_in_sol(pair: dict, sol_price_usd: float) -> float:
 
 class TradingEngine:
     def __init__(self, store, dex, jupiter=None, rpc=None, keypair=None,
-                 dry_run: bool = None):
+                 dry_run: bool = None, factors=None, price_history=None):
         self.store = store
         self.dex = dex
         self.jupiter = jupiter
         self.rpc = rpc
         self.keypair = keypair
         self.dry_run = config.DRY_RUN if dry_run is None else dry_run
+        self.factors = factors              # FactorLog, optional
+        self.price_history = price_history  # PriceHistory, optional
 
     # ---------- balances ----------
 
@@ -94,8 +96,9 @@ class TradingEngine:
         else:
             fill = await self._live_buy(mint, sol_amount)
 
+        tp_pct, sl_pct, vol_factor = self._exit_pcts(mint, settings)
         position = self._apply_buy_fill(existing, pair, mint, sol_amount, price_usd,
-                                        fill, source)
+                                        fill, source, tp_pct, sl_pct, vol_factor)
         self.store.put_position(position)
         return {
             "position": position,
@@ -139,9 +142,33 @@ class TradingEngine:
             "signature": result["signature"],
         }
 
+    def _exit_pcts(self, mint: str, settings: dict):
+        """TP/SL percentages for a new fill — flat from settings, or scaled
+        by the token's own recent volatility when vol_scaled_exits is on.
+        Thin history falls back to the flat values (factor 1.0)."""
+        tp_pct = settings["take_profit_pct"]
+        sl_pct = settings["stop_loss_pct"]
+        vol_factor = 1.0
+        if settings.get("vol_scaled_exits") and self.price_history is not None:
+            vol = self.price_history.volatility_pct(mint)
+            if vol is not None and config.VOL_REFERENCE_PCT > 0:
+                vol_factor = max(config.VOL_FACTOR_MIN,
+                                 min(config.VOL_FACTOR_MAX,
+                                     vol / config.VOL_REFERENCE_PCT))
+                tp_pct *= vol_factor
+                sl_pct = min(sl_pct * vol_factor, 95.0)
+        return tp_pct, sl_pct, vol_factor
+
+    def _factor_id(self, mint: str):
+        if self.factors is None:
+            return None
+        try:
+            return self.factors.latest_id_for_mint(mint)
+        except Exception:
+            return None
+
     def _apply_buy_fill(self, existing, pair, mint, sol_amount, price_usd, fill,
-                        source) -> dict:
-        settings = self.store.settings
+                        source, tp_pct, sl_pct, vol_factor) -> dict:
         base = pair.get("baseToken") or {}
         if existing:
             old_tokens = existing["token_amount"]
@@ -180,9 +207,11 @@ class TradingEngine:
                 "dry_run": self.dry_run,
                 "source": source,
                 "buy_signatures": [],
+                "factor_log_id": self._factor_id(mint),
             }
-        position["tp_price_usd"] = avg_entry * (1 + settings["take_profit_pct"] / 100)
-        position["sl_price_usd"] = avg_entry * (1 - settings["stop_loss_pct"] / 100)
+        position["tp_price_usd"] = avg_entry * (1 + tp_pct / 100)
+        position["sl_price_usd"] = avg_entry * (1 - sl_pct / 100)
+        position["exit_vol_factor"] = vol_factor
         position["peak_price_usd"] = max(position.get("peak_price_usd") or 0, price_usd)
         if fill["signature"]:
             position["buy_signatures"].append(fill["signature"])
@@ -257,6 +286,13 @@ class TradingEngine:
         if closed:
             pnl_sol = position["sol_received"] - position["sol_spent"]
             pnl_pct = (pnl_sol / position["sol_spent"] * 100) if position["sol_spent"] else 0.0
+            if self.factors is not None and position.get("factor_log_id") is not None:
+                try:  # close the factor-analysis loop: entry factors -> real outcome
+                    self.factors.update_trade_outcome(
+                        position["factor_log_id"], reason, pnl_pct
+                    )
+                except Exception:
+                    pass
             trade = {
                 **{k: position[k] for k in (
                     "mint", "symbol", "name", "entry_price_usd", "sol_spent",

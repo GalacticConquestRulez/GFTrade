@@ -83,11 +83,12 @@ STATE_FILE = os.getenv("STATE_FILE", "state.json")
 # Discovery (feeds + screening + scoring) runs every SCAN_INTERVAL_SECONDS.
 # Open-position exits (TP/SL/trailing/runner) are checked far more often —
 # with 90s checks a -10% stop on a fast coin routinely fills at -15%,
-# because price falls straight through the level between looks. Exit checks
-# cost one batched DexScreener call each, so a 20s cadence stays well under
-# rate limits.
+# because price falls straight through the level between looks. Each exit
+# check is ONE batched DexScreener pair call regardless of position count:
+# at 5s that's 12/min, plus ~6/min from discovery — far under the 300/min
+# pair-endpoint limit. Raise this if you ever see 429s in the logs.
 SCAN_INTERVAL_SECONDS = _env_int("SCAN_INTERVAL_SECONDS", 90)
-EXIT_CHECK_INTERVAL_SECONDS = _env_int("EXIT_CHECK_INTERVAL_SECONDS", 20)
+EXIT_CHECK_INTERVAL_SECONDS = _env_int("EXIT_CHECK_INTERVAL_SECONDS", 5)
 
 # --- Hard screening thresholds (discovery/filters.py) ---
 # None of these are research-backed magic numbers — they're sane starting
@@ -124,6 +125,18 @@ MIN_LP_LOCKED_PCT = 80.0         # at least this % of LP must be locked/burned
 CANDIDATE_POOL_MAX = 400         # mints tracked for re-checks between scans
 ALERT_COOLDOWN_HOURS = 24        # don't re-alert the same mint within this window
 
+# --- Factor logging (factors.py / analysis.py) ---
+FACTOR_DB = os.getenv("FACTOR_DB", "factor_log.db")
+FACTOR_DEDUPE_MINUTES = 30       # at most one snapshot per mint per this window
+
+# --- Volatility-scaled exits (opt-in via the vol_scaled_exits setting) ---
+# TP/SL percentages are multiplied by (token volatility / reference),
+# clamped to the band below, so a wild coin gets wider exits and a calm
+# one tighter — instead of one flat percentage for both.
+VOL_REFERENCE_PCT = 3.0          # point-to-point stdev (%) that maps to factor 1.0
+VOL_FACTOR_MIN = 0.5
+VOL_FACTOR_MAX = 2.0
+
 # --- Execution details ---
 PRIORITY_FEE = "auto"            # Jupiter prioritizationFeeLamports; "auto" or an int of lamports
 BALANCE_BUFFER_SOL = 0.01        # always leave this much SOL for fees/rent
@@ -151,6 +164,15 @@ DEFAULT_SETTINGS = {
     # fill lower — monitored stops aren't resting orders).
     "tp_sell_pct": 50.0,
     "runner_trailing_pct": 20.0,
+    # Trend-stage gate: block alerts/autobuy when price is already more
+    # than this % above its own lowest observed price in the last hour —
+    # "up 80% off the low" is late in a move, and late entries are how a
+    # pump gets ridden through the stop. 0 disables. Manual buys are never
+    # blocked; the token card shows the extension instead.
+    "max_entry_extension_pct": 60.0,
+    # Scale TP/SL by each token's own recent volatility (see VOL_* above).
+    # Off by default so dialed-in flat percentages keep meaning what they say.
+    "vol_scaled_exits": False,
     "min_alert_score": 70,       # 0-100 composite score needed to alert
     "min_autobuy_score": 82,     # stricter bar before money moves on its own
     "max_positions": 3,

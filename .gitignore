@@ -5,6 +5,8 @@ wallet.json
 # runtime state
 state.json
 onchain_state.json
+factor_log.db
+factor_log.db-*
 
 # python
 __pycache__/

@@ -20,6 +20,8 @@ from gftrade.clients.geckoterminal import GeckoTerminal
 from gftrade.clients.jupiter import Jupiter
 from gftrade.clients.rugcheck import RugCheck
 from gftrade.discovery.safety import SafetyChecker
+from gftrade.discovery.trend import PriceHistory
+from gftrade.factors import FactorLog
 from gftrade.scanner import Scanner
 from gftrade.solana_rpc import SolanaRpc
 from gftrade.store import Store
@@ -71,10 +73,14 @@ async def run() -> None:
     store = Store()
     rugcheck = RugCheck(http) if config.LP_CHECK_ENABLED else None
     safety = SafetyChecker(rpc, rugcheck)
-    engine = TradingEngine(store, dex, jupiter, rpc, keypair)
-    scanner = Scanner(store, dex, engine, safety, gecko=GeckoTerminal(http))
+    factors = FactorLog()
+    prices = PriceHistory()
+    engine = TradingEngine(store, dex, jupiter, rpc, keypair,
+                           factors=factors, price_history=prices)
+    scanner = Scanner(store, dex, engine, safety, gecko=GeckoTerminal(http),
+                      factors=factors, prices=prices)
     deps = Deps(store=store, dex=dex, engine=engine, scanner=scanner,
-                safety=safety, rpc=rpc, keypair=keypair)
+                safety=safety, rpc=rpc, keypair=keypair, factors=factors)
     app = build_application(deps)
 
     stop_event = asyncio.Event()
@@ -116,6 +122,7 @@ async def run() -> None:
             await app.updater.stop()
             await app.stop()
     await http.aclose()
+    factors.close()
     logger.info("shut down cleanly")
 
 

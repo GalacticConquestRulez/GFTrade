@@ -62,7 +62,8 @@ def mode_banner(dry_run: bool) -> str:
 # ---------- cards ----------
 
 def token_card(pair: dict, safety=None, score=None, breakdown=None,
-               pattern_hits=None, header: str = None) -> str:
+               pattern_hits=None, header: str = None,
+               extension_pct: float = None) -> str:
     base = pair.get("baseToken") or {}
     symbol, name = esc(base.get("symbol") or "?"), esc(base.get("name") or "?")
     mint = base.get("address") or "?"
@@ -100,6 +101,9 @@ def token_card(pair: dict, safety=None, score=None, breakdown=None,
     )
     if safety is not None:
         lines.append(f"🔒 {safety.line()}")
+    if extension_pct is not None:
+        marker = "⚠️ extended" if extension_pct > 30 else "early"
+        lines.append(f"↗ +{extension_pct:.0f}% off its 1h low ({marker})")
     if pattern_hits:
         shown = ", ".join(f"{esc(h['pattern'])} ({h['confidence']:.2f})" for h in pattern_hits)
         lines.append(f"📊 {shown}")
@@ -119,6 +123,7 @@ def signal_card(verdict: dict) -> str:
     return token_card(
         verdict["pair"], verdict["safety"], verdict["score"], verdict["breakdown"],
         verdict["patterns"], header=header,
+        extension_pct=verdict.get("extension_pct"),
     )
 
 
@@ -146,8 +151,12 @@ def buy_receipt(result: dict, self_contained: bool = True) -> str:
     )
     if result.get("merged"):
         lines.append(f"⚖️ New average entry {fmt_price(position['entry_price_usd'])}")
+    vol_note = ""
+    if (position.get("exit_vol_factor") or 1.0) != 1.0:
+        vol_note = f"  ·  vol-scaled ×{position['exit_vol_factor']:.2f}"
     lines.append(
-        f"🎯 TP {fmt_price(position['tp_price_usd'])}  ·  🛑 SL {fmt_price(position['sl_price_usd'])}"
+        f"🎯 TP {fmt_price(position['tp_price_usd'])}  ·  "
+        f"🛑 SL {fmt_price(position['sl_price_usd'])}{vol_note}"
     )
     if result.get("signature"):
         url = constants.SOLSCAN_TX_URL.format(sig=result["signature"])
@@ -437,6 +446,10 @@ def settings_text(settings: dict, dry_run: bool) -> str:
         f"1h buys ≥ {settings.get('min_buys_h1', 0):g} · "
         f"age {settings.get('min_pair_age_minutes', 0):g}m–"
         f"{settings.get('max_pair_age_hours', 0):g}h",
+        f"↗ Entry extension cap: "
+        + (f"{settings.get('max_entry_extension_pct', 0):g}% above 1h low"
+           if settings.get('max_entry_extension_pct') else "off")
+        + f" · Vol-scaled TP/SL: {'ON' if settings.get('vol_scaled_exits') else 'off'}",
         "",
         "Dry-run vs live is set by the DRY_RUN environment variable, not here — "
         "changing money-mode should require touching the deployment.",

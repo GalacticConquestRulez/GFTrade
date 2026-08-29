@@ -310,6 +310,38 @@ Add your own pattern: write a function in `discovery/patterns.py` with
 signature `(pair: dict) -> (triggered, confidence 0-1, name)` using any
 fields from DexScreener's pair object, append it to `ALL_PATTERNS`.
 
+## Trend gating, factor logging, and analysis
+
+DexScreener has no OHLCV, so the bot builds its own price memory: every
+discovery sweep records each candidate's price into a rolling ~2h buffer
+(`discovery/trend.py`, in-memory — it refills within a couple of ticks
+after a restart). Two features run on it:
+
+- **Extension gate** (`max_entry_extension_pct`, default 60, 0 = off):
+  alerts and autobuy are blocked when price already sits more than that
+  far above its own 1h low — a +80%-off-the-low entry is late in the
+  move, which is exactly how a pump gets bought at the top and ridden
+  through the stop. Token cards show "↗ +X% off its 1h low"; manual buys
+  are never blocked, just informed.
+- **Volatility-scaled exits** (`vol_scaled_exits` toggle, off by
+  default): TP/SL percentages are multiplied by the token's own recent
+  volatility relative to `VOL_REFERENCE_PCT`, clamped ×0.5–×2.0 — so a
+  wild coin gets room to breathe and a calm one exits tighter. Falls back
+  to your flat percentages when history is thin; receipts show the
+  applied factor.
+
+**Factor log** (`factors.py`, SQLite in `factor_log.db`): every candidate
+the scanner evaluates — passed or failed, traded or not — has 18 factors
+snapshotted (liquidity, mcap ratio, age, buy/sell flow, volume surge,
+price changes, pattern confidence, score, extension …), deduped to one
+row per coin per 30 minutes. Outcomes close the loop from both ends:
+price checkpoints at 1h/6h/24h (a vanished market records −100%), and
+real trade results attached when a position opened on a logged coin
+closes. **`/factors`** (or `python -m gftrade.analysis`) ranks every
+factor by correlation with 24h returns and with actual trade wins, plus
+average factor values in wins vs losses — printed with the two caveats
+that matter: correlation isn't causation, and small samples lie.
+
 ## Exit handling
 
 TP / stop-loss / trailing exits are **monitored by the bot**: each tick it

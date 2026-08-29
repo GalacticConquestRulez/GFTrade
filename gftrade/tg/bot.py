@@ -29,6 +29,7 @@ BOT_COMMANDS = [
     BotCommand("buy", "Token card or instant buy: /buy <mint> [SOL]"),
     BotCommand("positions", "Open positions with sell buttons"),
     BotCommand("trades", "Performance and recent trades"),
+    BotCommand("factors", "Which factors predict winners (analysis)"),
     BotCommand("settings", "Runtime settings"),
     BotCommand("wallet", "Address and balance"),
     BotCommand("panic", "Market-sell everything"),
@@ -45,6 +46,7 @@ class Deps:
     safety: object
     rpc: object = None
     keypair: object = None
+    factors: object = None
 
 
 def build_application(deps: Deps) -> Application:
@@ -56,6 +58,7 @@ def build_application(deps: Deps) -> Application:
     app.add_handler(CommandHandler("buy", handlers.cmd_buy))
     app.add_handler(CommandHandler(["positions", "sell"], handlers.cmd_positions))
     app.add_handler(CommandHandler("trades", handlers.cmd_trades))
+    app.add_handler(CommandHandler("factors", handlers.cmd_factors))
     app.add_handler(CommandHandler("settings", handlers.cmd_settings))
     app.add_handler(CommandHandler("wallet", handlers.cmd_wallet))
     app.add_handler(CommandHandler("scan", handlers.cmd_scan))
