@@ -109,7 +109,10 @@ def settings_kb(settings: dict) -> InlineKeyboardMarkup:
                               callback_data="stt:security_strict")],
         [InlineKeyboardButton(
             f"{onoff(settings.get('alert_unverified'))} Alert ❓ unverified (flips)",
-            callback_data="stt:alert_unverified")],
+            callback_data="stt:alert_unverified"),
+         InlineKeyboardButton(
+            f"{onoff(settings.get('scan_safe_only'))} Scan ✅-only",
+            callback_data="stt:scan_safe_only")],
         [InlineKeyboardButton("✏️ Buy presets", callback_data="ste:buy_presets"),
          InlineKeyboardButton("✏️ Slippage %", callback_data="ste:slippage_bps")],
         [InlineKeyboardButton("✏️ Take profit %", callback_data="ste:take_profit_pct"),

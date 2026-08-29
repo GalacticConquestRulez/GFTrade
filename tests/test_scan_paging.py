@@ -22,9 +22,10 @@ def make_verdicts(count, safety_ok=True, safety=None):
 
 
 def deps_with(verdicts):
-    return SimpleNamespace(scanner=SimpleNamespace(
-        last_scan={"verdicts": verdicts, "at": time.time()}
-    ))
+    return SimpleNamespace(
+        scanner=SimpleNamespace(last_scan={"verdicts": verdicts, "at": time.time()}),
+        store=SimpleNamespace(settings={}),
+    )
 
 
 def buttons_of(markup):
@@ -81,9 +82,11 @@ def test_empty_scan_renders_explanation_with_rescan():
 
 
 def test_empty_pool_points_at_feed_status():
-    deps = SimpleNamespace(scanner=SimpleNamespace(
-        last_scan={"verdicts": [], "at": time.time(), "evaluated": 0}
-    ))
+    deps = SimpleNamespace(
+        scanner=SimpleNamespace(
+            last_scan={"verdicts": [], "at": time.time(), "evaluated": 0}),
+        store=SimpleNamespace(settings={}),
+    )
     text, _ = scan_page_view(deps, 0)
     assert "empty candidate pool" in text and "/start" in text
     # with candidates evaluated but none listable, the message differs
@@ -147,3 +150,43 @@ def test_badges_on_view_buttons():
     labels = [b.text for b in buttons_of(markup)
               if (b.callback_data or "").startswith("r:")]
     assert all(l.startswith("✅") for l in labels)
+
+
+def test_safe_only_toggle_filters_and_counts(tmp_path):
+    from gftrade.store import Store
+    from gftrade.discovery.safety import SafetyReport
+
+    store = Store(str(tmp_path / "state.json"))
+    unlocked = SafetyReport(mint="x", mint_renounced=True, freeze_none=True,
+                            top10_pct=10.0, lp_locked_pct=5.0, standard_token=True)
+    verdicts = (make_verdicts(4, safety_ok=True)
+                + make_verdicts(6, safety_ok=False, safety=unlocked))
+    deps = deps_with(verdicts)
+    deps.store = store
+
+    # default: whole badged field shows
+    text, _ = scan_page_view(deps, 0)
+    assert "Safe-only view" not in text
+
+    # toggled on: only ✅ render, hidden count surfaces
+    store.set_setting("scan_safe_only", True)
+    text, markup = scan_page_view(deps, 0)
+    assert "6 non-✅ hidden" in text
+    view_buttons = [b for b in buttons_of(markup)
+                    if (b.callback_data or "").startswith("r:")]
+    assert len(view_buttons) == 4
+    assert all(b.text.startswith("✅") for b in view_buttons)
+
+
+def test_safe_only_with_nothing_safe_explains_itself(tmp_path):
+    from gftrade.store import Store
+    from gftrade.discovery.safety import SafetyReport
+
+    store = Store(str(tmp_path / "state.json"))
+    store.set_setting("scan_safe_only", True)
+    unlocked = SafetyReport(mint="x", mint_renounced=True, freeze_none=True,
+                            top10_pct=10.0, lp_locked_pct=5.0, standard_token=True)
+    deps = deps_with(make_verdicts(5, safety_ok=False, safety=unlocked))
+    deps.store = store
+    text, _ = scan_page_view(deps, 0)
+    assert "all 5 current candidates" in text and "/settings" in text

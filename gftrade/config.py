@@ -173,6 +173,10 @@ DEFAULT_SETTINGS = {
     # Scale TP/SL by each token's own recent volatility (see VOL_* above).
     # Off by default so dialed-in flat percentages keep meaning what they say.
     "vol_scaled_exits": False,
+    # /scan view filter: True lists only fully-✅ coins (LP lock proven,
+    # renounced, the works) and reports how many were hidden; False shows
+    # the whole badged field. Alerts/autobuy gating is unaffected either way.
+    "scan_safe_only": False,
     "min_alert_score": 70,       # 0-100 composite score needed to alert
     "min_autobuy_score": 82,     # stricter bar before money moves on its own
     "max_positions": 3,

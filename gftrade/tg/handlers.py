@@ -136,14 +136,23 @@ SCAN_CACHE_MAX_AGE = 600  # seconds a cached /scan stays pageable
 
 
 def scan_page_view(deps, page: int):
-    """Page through the most recent /scan sweep (best score first)."""
+    """Page through the most recent /scan sweep (best score first). With
+    scan_safe_only on, only fully-✅ coins render and the header counts
+    what was hidden — filtering happens at view time, so flipping the
+    toggle re-slices the cached sweep without a re-scan."""
     cache = deps.scanner.last_scan or {"verdicts": [], "at": 0}
     verdicts = cache["verdicts"]
+    hidden = 0
+    if deps.store.settings.get("scan_safe_only"):
+        safe = [v for v in verdicts if v.get("safety_ok")]
+        hidden = len(verdicts) - len(safe)
+        verdicts = safe
     total_pages = max(1, (len(verdicts) + SCAN_PAGE_SIZE - 1) // SCAN_PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
     chunk = verdicts[page * SCAN_PAGE_SIZE:(page + 1) * SCAN_PAGE_SIZE]
     text = fmt.scan_page_text(verdicts, page, SCAN_PAGE_SIZE,
-                              evaluated=cache.get("evaluated"))
+                              evaluated=cache.get("evaluated"),
+                              hidden_unsafe=hidden)
     markup = kb.scan_page_kb(chunk, page, total_pages,
                              start_rank=page * SCAN_PAGE_SIZE + 1)
     return text, markup

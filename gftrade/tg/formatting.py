@@ -359,8 +359,16 @@ def _is_unverified(verdict: dict) -> bool:
 
 
 def scan_page_text(verdicts: list, page: int, page_size: int,
-                   evaluated: int = None) -> str:
+                   evaluated: int = None, hidden_unsafe: int = 0) -> str:
     if not verdicts:
+        if hidden_unsafe:
+            return (
+                f"🔒 Safe-only view: all {hidden_unsafe} current candidates "
+                "fail a safety check or can't prove one (LP lock included), "
+                "so nothing qualifies to show.\n"
+                "Toggle '🔒 Scan ✅-only' off in /settings to browse them "
+                "with badges — they still can't be alerted or auto-bought."
+            )
         if evaluated == 0:
             return (
                 "Scan finished with an empty candidate pool — either the "
@@ -383,6 +391,9 @@ def scan_page_text(verdicts: list, page: int, page_size: int,
         f"✅ {safe_count} fully safe · {screened_count} pass screens · "
         f"only ✅ can be alerted or auto-bought",
     ]
+    if hidden_unsafe:
+        lines.append(f"🔒 Safe-only view — {hidden_unsafe} non-✅ hidden "
+                     "(toggle in /settings)")
     if near_miss_count:
         lines.append(
             f"🔻 {near_miss_count} near-misses shown with why they fell "
@@ -430,6 +441,7 @@ def settings_text(settings: dict, dry_run: bool) -> str:
            if settings.get('autobuy_min_age_minutes') else ""),
         f"🚨 Alert min score: {settings['min_alert_score']}",
         f"❓ Unverified alerts: {'ON — flip-size only, known-bad still never alerts' if settings.get('alert_unverified') else 'off (only fully-✅ coins alert)'}",
+        f"🔒 /scan shows: {'✅-only (non-safe hidden)' if settings.get('scan_safe_only') else 'everything, badged (only ✅ can alert/autobuy)'}",
         f"🛡 Security checks: {'strict (unknown = reject)' if settings['security_strict'] else 'lenient (unknown = allow)'}",
         "",
         f"💰 Buy presets: {presets} SOL",
