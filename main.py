@@ -71,7 +71,8 @@ async def run() -> None:
 
     http = httpx.AsyncClient(follow_redirects=True)
     rpc = SolanaRpc(config.SOLANA_RPC_URL, http,
-                    fallback_url=config.SOLANA_RPC_FALLBACK_URL)
+                    fallback_url=config.SOLANA_RPC_FALLBACK_URL,
+                    max_rps=config.RPC_MAX_RPS)
     dex = DexScreener(http)
     jupiter = Jupiter(http)
     store = Store()

@@ -73,6 +73,14 @@ SOLANA_RPC_FALLBACK_URL = os.getenv("SOLANA_RPC_FALLBACK_URL", "")
 # fallback for a cooldown instead of paying the primary's timeout each time.
 RPC_FAILOVER_AFTER = 3
 RPC_FAILOVER_COOLDOWN_SECONDS = 300
+# Client-side ceiling on RPC requests per second, enforced where requests
+# leave (solana_rpc.RateLimiter). Providers cap this per plan — Helius
+# allows 10/s on the free tier and 50/s on the $49 Developer plan — and a
+# discovery pass is bursty: verifying one fresh coin costs ~6 calls (mint
+# info, holders, and four more for the on-chain LP read), so 8 coins in a
+# pass is ~48 calls fired back to back. Default sits just under the free
+# tier; raise it to ~45 on Developer for faster sweeps. 0 disables.
+RPC_MAX_RPS = float(os.getenv("RPC_MAX_RPS", "8") or 8)
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
 # With a (free) portal.jup.ag key we use the keyed endpoint; without one we
 # fall back to the keyless lite endpoint, which is fine for light usage.

@@ -239,6 +239,17 @@ Wallet security, non-negotiable:
 - The public mainnet RPC rate-limits aggressively; for live trading use a
   paid RPC or exits may lag exactly when you need them.
 
+RPC rate limits: providers cap requests per second per plan (Helius
+allows 10/s free, 50/s on the $49 Developer plan). The bot's load is
+bursty — verifying one fresh coin costs about six RPC calls (mint info,
+holders, and four for the on-chain LP read), so a discovery pass
+checking eight new coins fires roughly 48 calls back to back. `RPC_MAX_RPS`
+(default 8, just under the free tier) enforces a ceiling in the RPC
+client itself, where requests actually leave; raise it to ~45 on the
+Developer plan for faster sweeps. Hitting a provider's limit isn't
+dangerous — a 429 makes a safety check return unknown, so coins show ❓
+and are retried — but it does mean fewer coins clear for autobuy.
+
 RPC latency and redundancy: `SOLANA_RPC_FALLBACK_URL` sets an optional
 standby endpoint used only when the primary errors. That lets the primary
 be a faster-but-newer endpoint — Helius's Gatekeeper edge gateway

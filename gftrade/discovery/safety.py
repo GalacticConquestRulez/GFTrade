@@ -129,10 +129,14 @@ def risk_tier(report) -> str:
 
 
 class SafetyChecker:
-    # Seconds between uncached checks. Each check is 2 RPC calls; free/public
-    # RPCs rate-limit hard, and a 429 shows up to the user as ❓ unverified —
-    # spacing the calls keeps the data flowing on modest infrastructure.
-    MIN_CHECK_INTERVAL = 0.4
+    # Seconds between uncached check STARTS. This used to be the rate
+    # control, which only works if you know how many RPC calls a check
+    # makes — and that changed (the on-chain LP read added four). The real
+    # ceiling now lives in solana_rpc.RateLimiter, where requests actually
+    # leave, so this is just a light smoothing stagger: checks queue at the
+    # limiter and keep the RPC pipe saturated at exactly the configured
+    # rate, rather than being throttled twice.
+    MIN_CHECK_INTERVAL = 0.1
 
     def __init__(self, rpc, rugcheck=None, cache_ttl: int = None, goplus=None,
                  onchain=None):

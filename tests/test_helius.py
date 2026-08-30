@@ -267,6 +267,56 @@ async def test_rpc_error_is_an_answer_not_a_failover():
     assert len(seen) == 1
 
 
+# ---------- RPC rate limiting ----------
+
+async def test_limiter_spaces_requests_to_the_configured_rate():
+    """The provider's cap is per second at the wire, so the ceiling has to
+    live where requests leave — a discovery pass fires ~6 calls per coin
+    and that count changes as checks change."""
+    import time as _time
+    from gftrade.solana_rpc import RateLimiter
+
+    limiter = RateLimiter(rps=50)  # 20ms apart
+    started = _time.monotonic()
+    for _ in range(6):
+        await limiter.acquire()
+    elapsed = _time.monotonic() - started
+    assert elapsed >= 5 * 0.020 * 0.9  # 5 gaps, allowing scheduler slop
+
+
+async def test_limiter_queues_concurrent_callers_without_stampeding():
+    import asyncio
+    import time as _time
+    from gftrade.solana_rpc import RateLimiter
+
+    limiter = RateLimiter(rps=50)
+    started = _time.monotonic()
+    await asyncio.gather(*(limiter.acquire() for _ in range(6)))
+    assert _time.monotonic() - started >= 5 * 0.020 * 0.9
+
+
+async def test_limiter_disabled_when_rps_is_zero():
+    from gftrade.solana_rpc import RateLimiter
+
+    limiter = RateLimiter(rps=0)
+    for _ in range(50):
+        await limiter.acquire()  # returns immediately, no pacing
+
+
+async def test_rpc_calls_go_through_the_limiter():
+    import time as _time
+
+    def handler(request):
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": 1})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    rpc = SolanaRpc("https://primary.example/rpc", client, max_rps=50)
+    started = _time.monotonic()
+    for _ in range(5):
+        await rpc._call("m", [])
+    assert _time.monotonic() - started >= 4 * 0.020 * 0.9
+
+
 async def test_no_fallback_configured_behaves_as_before():
     def handler(request):
         raise httpx.ConnectError("down")

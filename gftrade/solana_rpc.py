@@ -22,6 +22,37 @@ class RpcError(Exception):
     pass
 
 
+class RateLimiter:
+    """Client-side requests-per-second ceiling.
+
+    RPC providers cap requests per second (Helius: 10/s free, 50/s on the
+    $49 Developer plan), and the bot's own call volume is bursty — a
+    discovery pass verifying 8 fresh coins fires ~6 calls each. Pacing
+    upstream by staggering *checks* only works if you know how many calls
+    a check makes, which changes whenever the checks change; limiting
+    where the requests actually leave is the version that stays correct.
+
+    Each caller reserves the next free slot under the lock, then sleeps
+    outside it, so N concurrent callers queue and wake in order instead of
+    serializing behind one another's sleeps."""
+
+    def __init__(self, rps: float):
+        self._interval = 1.0 / rps if rps and rps > 0 else 0.0
+        self._lock = asyncio.Lock()
+        self._next_at = 0.0
+
+    async def acquire(self) -> None:
+        if not self._interval:
+            return
+        async with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next_at)
+            self._next_at = slot + self._interval
+        delay = slot - now
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+
 class SolanaRpc:
     """JSON-RPC client with an optional standby endpoint.
 
@@ -34,9 +65,11 @@ class SolanaRpc:
     just said no) is a real answer and never triggers failover."""
 
     def __init__(self, url: str, client: httpx.AsyncClient,
-                 fallback_url: str = None):
+                 fallback_url: str = None, max_rps: float = None):
         self.url = url
         self.fallback_url = fallback_url or None
+        self._limiter = RateLimiter(
+            config.RPC_MAX_RPS if max_rps is None else max_rps)
         self._client = client
         self._ids = itertools.count(1)
         self._primary_failures = 0
@@ -51,6 +84,7 @@ class SolanaRpc:
         return [self.url, self.fallback_url]
 
     async def _post(self, url: str, payload: dict):
+        await self._limiter.acquire()
         resp = await self._client.post(url, json=payload, timeout=15)
         resp.raise_for_status()
         return resp.json()
