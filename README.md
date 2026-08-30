@@ -81,10 +81,21 @@ when something goes wrong.
   and zero recorded sells is rejected as a honeypot signature — dry-run
   "wins" on such coins would be fiction, since the sim can't know a sell
   transaction would have failed on-chain.
-- LP lock check via RugCheck: at least `MIN_LP_LOCKED_PCT` (default 80%)
-  of the pool's LP tokens must be locked or burned, so the deployer can't
-  simply pull the liquidity. In strict mode (default) a token whose LP
-  status can't be verified is rejected — no lock proof, no trade.
+- LP lock check via a two-source chain: RugCheck first, GoPlus Security
+  as the independent keyless backup when RugCheck is down, rate-limited,
+  or hasn't indexed a coin. At least `MIN_LP_LOCKED_PCT` (default 80%)
+  of the main pool's LP must be locked or burned. Evidence rules are
+  deliberately conservative: when RugCheck's per-market numbers conflict
+  (a burned dust pool next to an unlocked real pool) the verdict is
+  "unknown" and the backup decides by pool TVL; GoPlus can *prove* a
+  lock but never proves an unlock, so a 🚫 banishment always rests on
+  positive evidence. GoPlus also backfills mint/freeze authority when
+  direct RPC reads fail. In strict mode (default) a token whose LP
+  status can't be verified by either source is rejected — no lock proof,
+  no trade. (DexScreener's public API exposes no lock data at all — the
+  website's padlock comes from private frontend endpoints — and
+  GeckoTerminal's lock field refreshes only daily, useless for fresh
+  launches; that's why the chain is RugCheck → GoPlus.)
 - **Known-risky coins are never listed, period.** Any coin with a
   known-bad check — unlocked LP, live mint or freeze authority,
   Token-2022, whale-heavy holders — is banished from `/scan` entirely

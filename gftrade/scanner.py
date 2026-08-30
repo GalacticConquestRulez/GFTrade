@@ -143,21 +143,23 @@ class Scanner:
 
     # ---------- the tick ----------
 
-    async def tick(self, discover: bool = True) -> list:
-        """One pass. Exits are checked on EVERY tick; discovery and the
-        signal-log bookkeeping only when `discover` is set — run_forever
-        calls this on the fast exit cadence and flips `discover` on at the
-        slower scan interval."""
+    async def tick(self, discover: bool = True, exits: bool = True) -> list:
+        """One pass. run_forever calls this with exits-only on the fast
+        cadence, and discovery runs as its own task (exits=False) so a slow
+        discovery pass never delays position protection. The default
+        (both on) is the one-shot behavior tests and callers rely on."""
         events = []
         stats = {"profiles_new": 0, "pool": 0, "checked": 0, "passed_screen": 0,
                  "signals": 0}
 
-        # 1. Manage what we already hold — exits take priority over entries.
-        try:
-            events.extend(await self.engine.check_exits())
-        except Exception as exc:
-            logger.exception("exit check failed")
-            events.append({"type": "scan_error", "where": "check_exits", "error": str(exc)})
+        if exits:
+            # Manage what we already hold — exits take priority over entries.
+            try:
+                events.extend(await self.engine.check_exits())
+            except Exception as exc:
+                logger.exception("exit check failed")
+                events.append({"type": "scan_error", "where": "check_exits",
+                               "error": str(exc)})
 
         if not discover:
             return events
@@ -481,11 +483,25 @@ class Scanner:
 
     # ---------- the loop ----------
 
+    async def _discovery_pass(self, publish) -> None:
+        """One full discovery tick, run as its own task so a slow pass
+        (safety-source outages, API backoffs) can never delay the exit
+        checks that protect open positions."""
+        try:
+            events = await self.tick(discover=True, exits=False)
+            if events:
+                await publish(events)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("discovery pass crashed; continuing")
+
     async def run_forever(self, publish) -> None:
         """`publish` is an async callable(list[event]) that renders events
-        into Telegram. Runs on the fast exit cadence; discovery piggybacks
-        every SCAN_INTERVAL_SECONDS. Individual tick failures are logged
-        and survived — the loop only exits on cancellation."""
+        into Telegram. Exit checks run on the fast cadence in this loop;
+        discovery runs every SCAN_INTERVAL_SECONDS as a separate task
+        (never overlapping itself). Failures are logged and survived —
+        the loop only exits on cancellation."""
         exit_interval = max(5, min(config.EXIT_CHECK_INTERVAL_SECONDS,
                                    config.SCAN_INTERVAL_SECONDS))
         logger.info(
@@ -494,16 +510,25 @@ class Scanner:
             config.SCAN_INTERVAL_SECONDS, exit_interval, self.engine.dry_run,
         )
         last_discovery = 0.0
-        while True:
-            try:
-                discover = (time.time() - last_discovery) >= config.SCAN_INTERVAL_SECONDS
-                events = await self.tick(discover=discover)
-                if discover:
-                    last_discovery = time.time()
-                if events:
-                    await publish(events)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("scanner tick crashed; continuing")
-            await asyncio.sleep(exit_interval)
+        discovery_task = None
+        try:
+            while True:
+                try:
+                    events = await self.tick(discover=False)
+                    if events:
+                        await publish(events)
+                    discovery_done = discovery_task is None or discovery_task.done()
+                    if (discovery_done
+                            and time.time() - last_discovery >= config.SCAN_INTERVAL_SECONDS):
+                        last_discovery = time.time()
+                        discovery_task = asyncio.create_task(
+                            self._discovery_pass(publish)
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("scanner tick crashed; continuing")
+                await asyncio.sleep(exit_interval)
+        finally:
+            if discovery_task is not None and not discovery_task.done():
+                discovery_task.cancel()

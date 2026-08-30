@@ -119,6 +119,10 @@ SAFETY_CACHE_TTL_SECONDS = 600
 # LP_CHECK_ENABLED=false to drop the requirement entirely.
 LP_CHECK_ENABLED = _env_bool("LP_CHECK_ENABLED", True)
 RUGCHECK_API_BASE = os.getenv("RUGCHECK_API_BASE", "https://api.rugcheck.xyz/v1")
+# Backup LP-lock source (keyless, ~30 req/min, one mint per request):
+# consulted only when RugCheck can't answer, so one service's outage or
+# index gap doesn't leave coins stuck at ❓ unverified.
+GOPLUS_API_BASE = os.getenv("GOPLUS_API_BASE", "https://api.gopluslabs.io/api/v1")
 MIN_LP_LOCKED_PCT = 80.0         # at least this % of LP must be locked/burned
 
 # --- Discovery bookkeeping ---

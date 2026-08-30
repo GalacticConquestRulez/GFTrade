@@ -57,15 +57,50 @@ class DexScreener:
 
     # ---------- pair lookups ----------
 
+    async def _pairs_batch(self, chain_id: str, batch: list, depth: int = 0) -> list:
+        """One /tokens/v1 call with self-healing: a failing batch is retried
+        once, then split in half to isolate a poison mint (DexScreener 500s
+        on certain addresses, which would otherwise poison the same batch
+        every tick), and only the truly broken remainder is skipped."""
+        try:
+            data = await self._get(f"/tokens/v1/{chain_id}/{','.join(batch)}") or []
+            return [p for p in data if p.get("chainId") == chain_id]
+        except Exception:
+            if depth >= 3 or len(batch) == 1:
+                logger.warning("dexscreener batch of %d failed; skipping this tick",
+                               len(batch))
+                return []
+            await asyncio.sleep(0.5)
+            mid = len(batch) // 2
+            left = await self._pairs_batch(chain_id, batch[:mid], depth + 1)
+            right = await self._pairs_batch(chain_id, batch[mid:], depth + 1)
+            return left + right
+
     async def pairs_for_tokens(self, chain_id: str, addresses: list) -> list:
-        """All pairs for up to N token addresses, batched 30 per request."""
+        """All pairs for up to N token addresses, batched 30 per request.
+        Raises only when EVERY batch fails (so exit checks can fail over to
+        the backup price source); partial failures degrade gracefully."""
         pairs = []
+        any_ok = False
         for i in range(0, len(addresses), TOKEN_BATCH_SIZE):
             batch = addresses[i:i + TOKEN_BATCH_SIZE]
-            data = await self._get(f"/tokens/v1/{chain_id}/{','.join(batch)}") or []
-            pairs.extend(p for p in data if p.get("chainId") == chain_id)
+            try:
+                data = await self._get(f"/tokens/v1/{chain_id}/{','.join(batch)}") or []
+                pairs.extend(p for p in data if p.get("chainId") == chain_id)
+                any_ok = True
+            except Exception as exc:
+                recovered = await self._pairs_batch(chain_id, batch, depth=1)
+                if recovered:
+                    pairs.extend(recovered)
+                    any_ok = True
+                elif len(addresses) <= TOKEN_BATCH_SIZE:
+                    raise  # single-batch call with nothing recovered
+                else:
+                    logger.warning("dexscreener batch failed permanently: %s", exc)
             if i + TOKEN_BATCH_SIZE < len(addresses):
                 await asyncio.sleep(0.25)
+        if not any_ok and addresses:
+            raise ConnectionError("all dexscreener token batches failed")
         return pairs
 
     async def pairs_for_token(self, chain_id: str, address: str) -> list:

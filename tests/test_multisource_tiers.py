@@ -203,3 +203,47 @@ def test_banned_count_renders_in_header():
                "safety_ok": True, "screened_ok": True, "reject_reasons": []}
     text = fmt.scan_page_text([verdict], 0, 5, evaluated=10, banned=3)
     assert "🛡 3 known-risky removed" in text
+
+
+async def test_dexscreener_batch_isolates_poison_mints():
+    """A 500 on one batch (the live failure the owners hit) must not kill
+    the whole lookup: the batch splits until the poison mint is isolated
+    and only it is dropped."""
+    import httpx
+    from gftrade.clients.dexscreener import DexScreener
+
+    poison = "POISON" + "x" * 38
+    good = [f"OK{i:02d}" + "y" * 38 for i in range(3)]
+
+    class SplittingDex(DexScreener):
+        def __init__(self):
+            super().__init__(client=None)
+            self.calls = []
+
+        async def _get(self, path, params=None):
+            self.calls.append(path)
+            if poison in path:
+                raise httpx.HTTPStatusError("500", request=None, response=None)
+            batch = path.rsplit("/", 1)[1].split(",")
+            return [{"chainId": "solana",
+                     "baseToken": {"address": m}, "priceUsd": "1"} for m in batch]
+
+    dex = SplittingDex()
+    pairs = await dex.pairs_for_tokens("solana", good + [poison])
+    got = {p["baseToken"]["address"] for p in pairs}
+    assert got == set(good)          # every clean mint survived
+    assert len(dex.calls) >= 3       # it actually split to isolate
+
+
+async def test_dexscreener_total_failure_still_raises_for_failover():
+    from gftrade.clients.dexscreener import DexScreener
+
+    class DeadDex(DexScreener):
+        def __init__(self):
+            super().__init__(client=None)
+
+        async def _get(self, path, params=None):
+            raise ConnectionError("down")
+
+    with pytest.raises(Exception):
+        await DeadDex().pairs_for_tokens("solana", ["A" * 40 + "aaaa"])

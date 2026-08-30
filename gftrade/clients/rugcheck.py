@@ -17,19 +17,29 @@ from .. import config
 
 def parse_lp_locked_pct(data: dict):
     """Extract the LP locked percentage from a RugCheck report.
-    Returns a float 0-100, or None when the report doesn't say."""
+    Returns a float 0-100, or None when the report doesn't say.
+
+    Multi-market rule: when a token trades in several pools, taking the
+    max would let one tiny 100%-burned dust pool vouch for a token whose
+    real liquidity is unlocked elsewhere (and taking the min would banish
+    tokens over irrelevant side pools). RugCheck reports don't carry a
+    reliable pool-size field to weight by, so: markets that broadly agree
+    (spread <= 20 points) yield the max; markets that conflict yield None
+    — conflicting evidence is unknown, and the safety chain then asks the
+    backup source, which selects the main pool by TVL."""
     if not isinstance(data, dict):
         return None
-    best = None
+    pcts = []
     for market in data.get("markets") or []:
         if not isinstance(market, dict):
             continue
-        lp = market.get("lp") or {}
-        pct = lp.get("lpLockedPct")
-        if isinstance(pct, (int, float)):
-            best = max(best if best is not None else 0.0, float(pct))
-    if best is not None:
-        return best
+        pct = (market.get("lp") or {}).get("lpLockedPct")
+        if isinstance(pct, (int, float)) and 0 <= float(pct) <= 100:
+            pcts.append(float(pct))
+    if pcts:
+        if max(pcts) - min(pcts) <= 20:
+            return max(pcts)
+        return None  # markets disagree -> let the backup source decide
     # Fallback: the risks list names an unlocked LP explicitly.
     for risk in data.get("risks") or []:
         name = str((risk or {}).get("name", "")).lower()

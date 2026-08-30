@@ -151,9 +151,18 @@ def test_safety_line_renders_unknowns():
 
 
 def test_parse_lp_locked_pct_shapes():
-    # normal shape: max across markets
-    data = {"markets": [{"lp": {"lpLockedPct": 42.5}}, {"lp": {"lpLockedPct": 99.9}}]}
+    # agreeing markets -> max
+    data = {"markets": [{"lp": {"lpLockedPct": 95.0}}, {"lp": {"lpLockedPct": 99.9}}]}
     assert parse_lp_locked_pct(data) == 99.9
+    assert parse_lp_locked_pct({"markets": [{"lp": {"lpLockedPct": 100.0}}]}) == 100.0
+    # DISAGREEING markets (burned dust pool vs real unlocked pool) -> None,
+    # so the safety chain consults the backup instead of trusting either
+    conflict = {"markets": [{"lp": {"lpLockedPct": 100.0}},
+                            {"lp": {"lpLockedPct": 3.0}}]}
+    assert parse_lp_locked_pct(conflict) is None
+    # agreeing-low markets are a real unlocked verdict, not a conflict
+    low = {"markets": [{"lp": {"lpLockedPct": 2.0}}, {"lp": {"lpLockedPct": 5.0}}]}
+    assert parse_lp_locked_pct(low) == 5.0
     # risks-list fallback names an unlocked LP
     assert parse_lp_locked_pct({"risks": [{"name": "LP Unlocked"}]}) == 0.0
     # unknown shapes -> None, never a guess
@@ -161,3 +170,76 @@ def test_parse_lp_locked_pct_shapes():
     assert parse_lp_locked_pct({"markets": [{"lp": {}}]}) is None
     assert parse_lp_locked_pct(None) is None
     assert parse_lp_locked_pct({"markets": [{"lp": {"lpLockedPct": "high"}}]}) is None
+
+
+class FakeGoPlus:
+    def __init__(self, pct=None, auth=None, fail=False):
+        self.pct = pct
+        self.auth = auth
+        self.fail = fail
+        self.lp_calls = 0
+
+    async def lp_locked_pct(self, mint):
+        if self.fail:
+            raise ConnectionError("goplus down")
+        self.lp_calls += 1
+        return self.pct
+
+    async def authorities(self, mint):
+        if self.fail:
+            raise ConnectionError("goplus down")
+        return self.auth
+
+
+async def test_goplus_backs_up_rugcheck_for_lp():
+    checker = SafetyChecker(clean_rpc(), FakeRugCheck(None),
+                            goplus=FakeGoPlus(pct=97.0))
+    report = await checker.check("MINT")
+    assert report.lp_locked_pct == 97.0
+    assert report.lp_source == "goplus"
+    assert report.passes(strict=True)
+
+
+async def test_rugcheck_answer_skips_the_backup():
+    goplus = FakeGoPlus(pct=1.0)  # would say unlocked — must never be consulted
+    checker = SafetyChecker(clean_rpc(), FakeRugCheck(100.0), goplus=goplus)
+    report = await checker.check("MINT")
+    assert report.lp_locked_pct == 100.0
+    assert report.lp_source == "rugcheck"
+    assert goplus.lp_calls == 0
+
+
+async def test_both_lp_sources_down_means_unverified():
+    checker = SafetyChecker(clean_rpc(), FakeRugCheck(0, fail=True),
+                            goplus=FakeGoPlus(fail=True))
+    report = await checker.check("MINT")
+    assert report.lp_locked_pct is None
+    assert not report.passes(strict=True)
+    assert report.passes(strict=False)
+
+
+async def test_goplus_fills_authorities_when_rpc_is_down():
+    checker = SafetyChecker(
+        FakeRpc(None, fail=True), FakeRugCheck(100.0),
+        goplus=FakeGoPlus(pct=100.0,
+                          auth={"mint_renounced": True, "freeze_none": True}),
+    )
+    report = await checker.check("MINT")
+    assert report.mint_renounced is True
+    assert report.freeze_none is True
+    # top10/token-program still unknown -> strict rejects, but the report
+    # is far more informed than a blanket ❓
+    assert not report.passes(strict=True)
+    assert report.passes(strict=False)
+
+
+async def test_concurrent_checks_share_one_fetch():
+    """The checker is shared between the scanner task and Telegram
+    handlers — simultaneous checks of the same mint must not duplicate
+    RPC work or leapfrog the pacing."""
+    import asyncio
+    rpc = clean_rpc()
+    checker = SafetyChecker(rpc, FakeRugCheck(100.0))
+    reports = await asyncio.gather(*[checker.check("MINT") for _ in range(5)])
+    assert rpc.mint_info_calls == 1
+    assert all(r.lp_locked_pct == 100.0 for r in reports)

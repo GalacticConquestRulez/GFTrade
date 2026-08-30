@@ -34,7 +34,8 @@ class SafetyReport:
     mint_renounced: bool = None    # None = unknown (RPC unavailable/failed)
     freeze_none: bool = None
     top10_pct: float = None        # excludes the largest single account
-    lp_locked_pct: float = None    # None = RugCheck couldn't tell us
+    lp_locked_pct: float = None    # None = no LP source could tell us
+    lp_source: str = None          # which service answered ("rugcheck"/"goplus")
     standard_token: bool = None    # classic SPL Token program? False = Token-2022 etc.
     error: str = None
 
@@ -73,12 +74,13 @@ class SafetyReport:
         if self.standard_token is False:
             parts.append("🚨 Token-2022 (sell-trap extensions possible)")
         if config.LP_CHECK_ENABLED:
+            source = " ·GP" if self.lp_source == "goplus" else ""
             if self.lp_locked_pct is None:
                 parts.append("LP ❓")
             elif self.lp_locked_pct >= config.MIN_LP_LOCKED_PCT:
-                parts.append(f"LP 🔒 {self.lp_locked_pct:.0f}%")
+                parts.append(f"LP 🔒 {self.lp_locked_pct:.0f}%{source}")
             else:
-                parts.append(f"LP 🚨 only {self.lp_locked_pct:.0f}% locked")
+                parts.append(f"LP 🚨 only {self.lp_locked_pct:.0f}% locked{source}")
         return " | ".join(parts)
 
 
@@ -102,18 +104,37 @@ class SafetyChecker:
     # spacing the calls keeps the data flowing on modest infrastructure.
     MIN_CHECK_INTERVAL = 0.4
 
-    def __init__(self, rpc, rugcheck=None, cache_ttl: int = None):
+    def __init__(self, rpc, rugcheck=None, cache_ttl: int = None, goplus=None):
         self._rpc = rpc
-        self._rugcheck = rugcheck
+        # LP-lock sources, tried in order until one answers. RugCheck is
+        # primary; GoPlus is the independent backup so one service's
+        # outage or index gap doesn't leave coins stuck at ❓ unverified.
+        self._lp_sources = [
+            (name, source)
+            for name, source in (("rugcheck", rugcheck), ("goplus", goplus))
+            if source is not None
+        ]
+        self._goplus = goplus
         self._ttl = cache_ttl or config.SAFETY_CACHE_TTL_SECONDS
         self._cache = {}  # mint -> (SafetyReport, fetched_at, ttl)
         self._last_check_at = 0.0
+        # One instance is shared by the scanner task and Telegram handlers;
+        # the lock serializes uncached checks so concurrent callers can't
+        # duplicate fetches or leapfrog the pacing sleep.
+        self._lock = asyncio.Lock()
 
     async def check(self, mint: str) -> SafetyReport:
         cached = self._cache.get(mint)
         if cached and time.time() - cached[1] < cached[2]:
             return cached[0]
 
+        async with self._lock:
+            cached = self._cache.get(mint)  # a concurrent caller may have filled it
+            if cached and time.time() - cached[1] < cached[2]:
+                return cached[0]
+            return await self._check_uncached(mint)
+
+    async def _check_uncached(self, mint: str) -> SafetyReport:
         wait = self.MIN_CHECK_INTERVAL - (time.time() - self._last_check_at)
         if wait > 0:
             await asyncio.sleep(wait)
@@ -144,16 +165,36 @@ class SafetyChecker:
         except Exception as exc:  # RPC down/rate-limited — report unknown, don't crash the scan
             report.error = f"{type(exc).__name__}: {exc}"
 
-        if config.LP_CHECK_ENABLED and self._rugcheck is not None:
+        if config.LP_CHECK_ENABLED:
+            for source_name, source in self._lp_sources:
+                try:
+                    pct = await source.lp_locked_pct(mint)
+                except Exception:
+                    pct = None  # unreachable -> try the next source
+                if pct is not None:
+                    report.lp_locked_pct = pct
+                    report.lp_source = source_name
+                    break
+
+        # If the direct RPC reads failed, GoPlus can still answer the
+        # authority questions — a second opinion beats an unknown.
+        if self._goplus is not None and (
+            report.mint_renounced is None or report.freeze_none is None
+        ):
             try:
-                report.lp_locked_pct = await self._rugcheck.lp_locked_pct(mint)
+                authorities = await self._goplus.authorities(mint)
             except Exception:
-                report.lp_locked_pct = None  # unreachable -> unknown
+                authorities = None
+            if authorities:
+                if report.mint_renounced is None:
+                    report.mint_renounced = authorities.get("mint_renounced")
+                if report.freeze_none is None:
+                    report.freeze_none = authorities.get("freeze_none")
 
         # Unknowns get a short TTL so transient API failures retry soon
         # instead of poisoning a token's verdict for 10 minutes.
         incomplete = report.error is not None or (
-            config.LP_CHECK_ENABLED and self._rugcheck is not None
+            config.LP_CHECK_ENABLED and self._lp_sources
             and report.lp_locked_pct is None
         )
         ttl = 120 if incomplete else self._ttl

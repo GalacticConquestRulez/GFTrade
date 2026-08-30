@@ -17,6 +17,7 @@ from gftrade import config
 from gftrade import wallet as wallet_mod
 from gftrade.clients.dexscreener import DexScreener
 from gftrade.clients.geckoterminal import GeckoTerminal
+from gftrade.clients.goplus import GoPlus
 from gftrade.clients.jupiter import Jupiter
 from gftrade.clients.rugcheck import RugCheck
 from gftrade.discovery.safety import SafetyChecker
@@ -72,7 +73,10 @@ async def run() -> None:
     jupiter = Jupiter(http)
     store = Store()
     rugcheck = RugCheck(http) if config.LP_CHECK_ENABLED else None
-    safety = SafetyChecker(rpc, rugcheck)
+    # GoPlus is constructed regardless of LP_CHECK_ENABLED: its authority
+    # backfill (mint/freeze when RPC reads fail) is independent of LP checks.
+    goplus = GoPlus(http)
+    safety = SafetyChecker(rpc, rugcheck, goplus=goplus)
     factors = FactorLog()
     prices = PriceHistory()
     gecko = GeckoTerminal(http)
