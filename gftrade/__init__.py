@@ -1,3 +1,3 @@
 """GFTrade — Telegram trading bot for Solana with automated coin discovery."""
 
-__version__ = "1.8.2"
+__version__ = "1.8.3"

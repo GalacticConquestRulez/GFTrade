@@ -55,6 +55,9 @@ class Scanner:
         self.pool = {}
         self.last_tick_at = None
         self.last_tick_stats = {}
+        # When the currently-running discovery sweep started, so /start can
+        # say "first sweep running (40s in)" instead of a scary "never".
+        self.sweep_started_at = None
         # feed name -> "ok" / "error" from the most recent attempt, so
         # /start can show whether discovery data is actually flowing
         self.feed_status = {}
@@ -189,6 +192,7 @@ class Scanner:
         if not discover:
             return events
 
+        self.sweep_started_at = time.time()
         settings = self.store.settings
         if settings["scanner_on"]:
             try:
@@ -444,6 +448,10 @@ class Scanner:
         screened, near_misses = [], []
         evaluated = 0
         banned = 0  # known-risky coins removed from view entirely
+        # Why candidates fell out of the list — rendered when the scan comes
+        # up empty so "nothing to show" is a diagnosis, not a shrug.
+        drops = {"no_pair": 0, "too_old": 0, "unvetted": 0}
+        safety_budget = [SCAN_NOW_SAFETY_BUDGET]
         if batch:
             pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID, batch)
             best_by_mint = {}
@@ -459,7 +467,7 @@ class Scanner:
 
             strict = self.store.settings["security_strict"]
             evaluated = len(best_by_mint)
-            safety_budget = [SCAN_NOW_SAFETY_BUDGET]
+            drops["no_pair"] = len(batch) - evaluated
             for mint, pair in best_by_mint.items():
                 verdict = await self.evaluate_pair(pair, boosted,
                                                    safety_budget=safety_budget)
@@ -471,6 +479,7 @@ class Scanner:
                     continue
                 # Near-miss: keep unless it's simply too old for our window.
                 if any("exceeds max" in r for r in verdict["reject_reasons"]):
+                    drops["too_old"] += 1
                     continue
                 verdict["patterns"] = patterns.scan(pair)
                 verdict["score"], verdict["breakdown"] = scoring.score_pair(
@@ -493,13 +502,17 @@ class Scanner:
             # visible list without proving it isn't known-bad. Check lazily,
             # capped so a risky streak can't burn the API budget.
             checked = 0
-            for verdict in near_misses:
-                if len(verdicts) >= self.SCAN_MIN_LIST or checked >= self.SCAN_MIN_LIST * 2:
+            for index, verdict in enumerate(near_misses):
+                if len(verdicts) >= self.SCAN_MIN_LIST:
                     break
-                cached = self.safety.cached(verdict["mint"])
-                if cached is None:
-                    if safety_budget[0] <= 0:
-                        break  # can't verify more this sweep; unshown beats unvetted
+                if checked >= self.SCAN_MIN_LIST * 2 or (
+                    self.safety.cached(verdict["mint"]) is None
+                    and safety_budget[0] <= 0
+                ):
+                    # can't verify more this sweep; unshown beats unvetted
+                    drops["unvetted"] = len(near_misses) - index
+                    break
+                if self.safety.cached(verdict["mint"]) is None:
                     safety_budget[0] -= 1
                 checked += 1
                 try:
@@ -513,19 +526,40 @@ class Scanner:
                     continue
                 verdicts.append(verdict)
         self.last_scan = {"verdicts": verdicts, "at": time.time(),
-                          "evaluated": evaluated, "banned": banned}
+                          "evaluated": evaluated, "banned": banned,
+                          "drops": drops}
         return verdicts
 
     # ---------- the loop ----------
+
+    # A sweep must finish inside this or be cancelled and retried. Every
+    # network call already has its own timeout, so this should never fire —
+    # it's the last line of defense against an unforeseen wedge leaving
+    # "last sweep never" on the board forever.
+    SWEEP_TIMEOUT_SECONDS = 300
 
     async def _discovery_pass(self, publish) -> None:
         """One full discovery tick, run as its own task so a slow pass
         (safety-source outages, API backoffs) can never delay the exit
         checks that protect open positions."""
         try:
-            events = await self.tick(discover=True, exits=False)
+            events = await asyncio.wait_for(
+                self.tick(discover=True, exits=False), self.SWEEP_TIMEOUT_SECONDS
+            )
             if events:
                 await publish(events)
+        except asyncio.TimeoutError:
+            logger.error("discovery sweep exceeded %ss; cancelled, will retry",
+                         self.SWEEP_TIMEOUT_SECONDS)
+            try:
+                await publish([{
+                    "type": "scan_error", "where": "discovery watchdog",
+                    "error": (f"a sweep ran past {self.SWEEP_TIMEOUT_SECONDS}s and "
+                              "was cancelled — safety sources are very slow right "
+                              "now; retrying on the normal schedule"),
+                }])
+            except Exception:
+                logger.exception("failed to publish watchdog event")
         except asyncio.CancelledError:
             raise
         except Exception:

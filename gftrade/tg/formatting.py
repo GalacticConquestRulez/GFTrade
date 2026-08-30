@@ -380,7 +380,7 @@ def risk_reasons(report) -> list:
 
 def scan_page_text(verdicts: list, page: int, page_size: int,
                    evaluated: int = None, hidden_unsafe: int = 0,
-                   banned: int = 0) -> str:
+                   banned: int = 0, drops: dict = None) -> str:
     if not verdicts:
         if hidden_unsafe:
             return (
@@ -390,12 +390,35 @@ def scan_page_text(verdicts: list, page: int, page_size: int,
                 "Toggle '🔒 Scan ✅-only' off in /settings to browse them "
                 "with badges — they still can't be alerted or auto-bought."
             )
-        if evaluated == 0:
+        if evaluated == 0 and not (drops or {}).get("no_pair"):
             return (
                 "Scan finished with an empty candidate pool — either the "
                 "bot just started (the pool refills within a few minutes) "
                 "or the discovery feeds are unreachable. Check /start for "
                 "feed status."
+            )
+        if drops is not None:
+            # An empty scan should explain itself — where 41 candidates went
+            # is the difference between "broken" and "working as intended".
+            parts = []
+            if drops.get("no_pair"):
+                parts.append(f"{drops['no_pair']} have no tradable DexScreener "
+                             "pair yet (bonding-curve coins appear once indexed)")
+            if drops.get("too_old"):
+                parts.append(f"{drops['too_old']} aged out of the trading window")
+            if banned:
+                parts.append(f"{banned} banned as known-risky")
+            if drops.get("unvetted"):
+                parts.append(f"{drops['unvetted']} still waiting on safety "
+                             "vetting (per-sweep API budget — retried next sweep)")
+            detail = " · ".join(parts) if parts else \
+                "every pair failed the market screens"
+            total = (evaluated or 0) + drops.get("no_pair", 0)
+            return (
+                f"Scan finished — nothing listable from {total} candidates:\n"
+                f"{detail}.\n"
+                "The background scanner keeps watching and will alert you "
+                "when something qualifies."
             )
         return (
             "Scan finished: nothing in the pool is inside the tradable age "
@@ -517,10 +540,16 @@ def wallet_text(dry_run: bool, address: str = None, balance_sol: float = None,
 
 def start_text(dry_run: bool, summary: dict, scanner_on: bool, pool_size: int,
                last_tick_at: float = None, tick_stats: dict = None,
-               feed_status: dict = None, version: str = None) -> str:
+               feed_status: dict = None, version: str = None,
+               sweep_started_at: float = None) -> str:
     tick = "never"
     if last_tick_at:
         tick = f"{max(0, time.time() - last_tick_at):.0f}s ago"
+    elif sweep_started_at:
+        # A cold start pays for every safety check from scratch — the first
+        # sweep can take a couple of minutes. Say so instead of "never".
+        tick = (f"first one running now ({max(0, time.time() - sweep_started_at):.0f}s in "
+                "— a cold start takes a few minutes)")
     win_rate = f"{summary['win_rate'] * 100:.0f}%" if summary["win_rate"] is not None else "—"
     title = "<b>GFTrade</b>"
     if version:

@@ -107,6 +107,78 @@ async def test_near_miss_fill_stops_when_budget_spent(store):
     assert all(v["safety"] is not None for v in verdicts)  # nothing unvetted shown
 
 
+async def test_sweep_watchdog_cancels_a_wedged_pass(store):
+    """No matter what wedges inside a sweep, the watchdog cancels it,
+    reports once, and the next sweep can start — 'last sweep never' can
+    no longer persist silently."""
+    import asyncio
+
+    scanner, _ = build_wide_scanner(store, 1)
+    scanner.SWEEP_TIMEOUT_SECONDS = 0.05
+
+    async def wedged_tick(discover=True, exits=True):
+        await asyncio.sleep(30)
+
+    scanner.tick = wedged_tick
+    published = []
+
+    async def publish(events):
+        published.extend(events)
+
+    await scanner._discovery_pass(publish)  # returns instead of hanging
+    assert published and published[0]["type"] == "scan_error"
+    assert "watchdog" in published[0]["where"]
+
+
+async def test_start_shows_first_sweep_in_progress(store):
+    from gftrade.tg import formatting as fmt
+
+    summary = {"win_rate": None, "open_positions": 0, "closed_trades": 0,
+               "realized_pnl_sol": 0.0}
+    import time as _time
+    text = fmt.start_text(True, summary, True, 41,
+                          last_tick_at=None, sweep_started_at=_time.time() - 40)
+    assert "never" not in text
+    assert "first one running now" in text
+    # once a sweep completed, the normal "Xs ago" wins
+    text = fmt.start_text(True, summary, True, 41,
+                          last_tick_at=_time.time() - 10,
+                          sweep_started_at=_time.time() - 5)
+    assert "ago" in text and "running now" not in text
+
+
+async def test_empty_scan_explains_where_candidates_went(store):
+    """41 candidates -> 0 listed must render as a breakdown, not a shrug."""
+    from gftrade.tg import formatting as fmt
+
+    text = fmt.scan_page_text(
+        [], 0, 5, evaluated=20, banned=3,
+        drops={"no_pair": 21, "too_old": 15, "unvetted": 2},
+    )
+    assert "41 candidates" in text
+    assert "21" in text and "no tradable" in text
+    assert "15" in text and "aged out" in text
+    assert "3 banned" in text
+    assert "2" in text and "budget" in text
+
+
+async def test_scan_now_records_drop_diagnostics(store):
+    """Aged-out coins land in the drops breakdown the empty message uses."""
+    from gftrade.scanner import Scanner
+    from gftrade.trading.engine import TradingEngine
+    from conftest import FakeDex, make_pair
+
+    old_mint = "O" * 40 + "oooo"
+    pairs = {old_mint: make_pair(mint=old_mint, symbol="OLD", age_hours=40)}
+    dex = FakeDex(pairs_by_mint=pairs,
+                  profiles=[{"chainId": "solana", "tokenAddress": old_mint}])
+    scanner = Scanner(store, dex, TradingEngine(store, dex, dry_run=True),
+                      FakeSafety())
+    verdicts = await scanner.scan_now()
+    assert verdicts == []
+    assert scanner.last_scan["drops"]["too_old"] == 1
+
+
 async def test_safety_checker_cached_semantics():
     from gftrade.discovery.safety import SafetyChecker
     from test_safety import FakeRugCheck, clean_rpc

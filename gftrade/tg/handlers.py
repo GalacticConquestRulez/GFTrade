@@ -136,6 +136,7 @@ def start_view(deps):
         deps.store.settings["scanner_on"], len(deps.scanner.pool),
         deps.scanner.last_tick_at, deps.scanner.last_tick_stats,
         deps.scanner.feed_status, version=__version__,
+        sweep_started_at=deps.scanner.sweep_started_at,
     )
     return text, kb.main_menu_kb()
 
@@ -162,7 +163,8 @@ def scan_page_view(deps, page: int):
     text = fmt.scan_page_text(verdicts, page, SCAN_PAGE_SIZE,
                               evaluated=cache.get("evaluated"),
                               hidden_unsafe=hidden,
-                              banned=cache.get("banned", 0))
+                              banned=cache.get("banned", 0),
+                              drops=cache.get("drops"))
     markup = kb.scan_page_kb(chunk, page, total_pages,
                              start_rank=page * SCAN_PAGE_SIZE + 1)
     return text, markup
