@@ -48,7 +48,7 @@ async def test_scan_sorts_by_tier_before_market_quality(store):
     }
 
     class TierSafety(FakeSafety):
-        async def check(self, mint):
+        async def check(self, mint, pair=None):
             self.check_calls += 1
             report = SafetyReport(**{**reports[mint].__dict__, "mint": mint})
             self._cache[mint] = report
@@ -144,7 +144,7 @@ async def test_risky_near_misses_cannot_fill_the_list(store):
     visible list without proving it isn't known-bad — a thin market must
     not become a backdoor for unlocked-LP coins."""
     class RiskySafety(FakeSafety):
-        async def check(self, mint):
+        async def check(self, mint, pair=None):
             self.check_calls += 1
             report = SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
                                   top10_pct=10.0, lp_locked_pct=2.0,

@@ -74,7 +74,8 @@ class SafetyReport:
         if self.standard_token is False:
             parts.append("🚨 Token-2022 (sell-trap extensions possible)")
         if config.LP_CHECK_ENABLED:
-            source = " ·GP" if self.lp_source == "goplus" else ""
+            source = {"goplus": " ·GP", "curve": " ·curve",
+                      "pumpfun": " ·pf"}.get(self.lp_source, "")
             if self.lp_locked_pct is None:
                 parts.append("LP ❓")
             elif self.lp_locked_pct >= config.MIN_LP_LOCKED_PCT:
@@ -82,6 +83,35 @@ class SafetyReport:
             else:
                 parts.append(f"LP 🚨 only {self.lp_locked_pct:.0f}% locked{source}")
         return " | ".join(parts)
+
+
+def structural_lp_lock(pair):
+    """(pct, source) when the trading venue itself makes an LP pull
+    impossible, or None. Used strictly as the LAST rung of the LP chain —
+    only consulted when RugCheck and GoPlus both answered unknown, and
+    never allowed to override real evidence from either.
+
+    - pump.fun / Raydium LaunchLab bonding curves ("pumpfun"/"launchlab"
+      dexIds): there are no LP tokens AT ALL — liquidity sits in program
+      escrow until graduation. Nothing exists to pull.
+    - PumpSwap pools for pump.fun-minted tokens (mint ends in "pump"):
+      created by pump.fun's graduation migration, which locks the
+      liquidity in the protocol permanently.
+
+    Deliberately NOT inferred: plain Raydium pools. Anyone can open a
+    Raydium pool and keep the LP tokens — that's the classic rug — and a
+    scammer can vanity-grind a mint ending in "pump" and list it straight
+    on Raydium to spoof exactly this kind of inference. Raydium pools must
+    prove their lock through RugCheck/GoPlus like everyone else."""
+    if not isinstance(pair, dict):
+        return None
+    dex_id = str(pair.get("dexId") or "").strip().lower()
+    if dex_id in ("pumpfun", "launchlab"):
+        return 100.0, "curve"
+    mint = str((pair.get("baseToken") or {}).get("address") or "")
+    if dex_id == "pumpswap" and mint.endswith("pump"):
+        return 100.0, "pumpfun"
+    return None
 
 
 def risk_tier(report) -> str:
@@ -131,7 +161,10 @@ class SafetyChecker:
             return cached[0]
         return None
 
-    async def check(self, mint: str) -> SafetyReport:
+    async def check(self, mint: str, pair: dict = None) -> SafetyReport:
+        """`pair` (the DexScreener pair being evaluated, optional) enables
+        the structural-lock fallback for venues where an LP pull is
+        impossible by construction — see structural_lp_lock()."""
         cached = self._cache.get(mint)
         if cached and time.time() - cached[1] < cached[2]:
             return cached[0]
@@ -140,9 +173,9 @@ class SafetyChecker:
             cached = self._cache.get(mint)  # a concurrent caller may have filled it
             if cached and time.time() - cached[1] < cached[2]:
                 return cached[0]
-            return await self._check_uncached(mint)
+            return await self._check_uncached(mint, pair)
 
-    async def _check_uncached(self, mint: str) -> SafetyReport:
+    async def _check_uncached(self, mint: str, pair: dict = None) -> SafetyReport:
         wait = self.MIN_CHECK_INTERVAL - (time.time() - self._last_check_at)
         if wait > 0:
             await asyncio.sleep(wait)
@@ -183,6 +216,14 @@ class SafetyChecker:
                     report.lp_locked_pct = pct
                     report.lp_source = source_name
                     break
+            if report.lp_locked_pct is None:
+                # Both real sources came up unknown (young pools often
+                # aren't indexed yet). Venue structure is the last word —
+                # a bonding curve has no LP to pull, a pump.fun migration
+                # locks it — but real evidence above always wins.
+                structural = structural_lp_lock(pair)
+                if structural is not None:
+                    report.lp_locked_pct, report.lp_source = structural
 
         # If the direct RPC reads failed, GoPlus can still answer the
         # authority questions — a second opinion beats an unknown.

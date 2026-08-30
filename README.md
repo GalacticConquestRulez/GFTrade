@@ -95,7 +95,17 @@ when something goes wrong.
   no trade. (DexScreener's public API exposes no lock data at all — the
   website's padlock comes from private frontend endpoints — and
   GeckoTerminal's lock field refreshes only daily, useless for fresh
-  launches; that's why the chain is RugCheck → GoPlus.)
+  launches; that's why the chain is RugCheck → GoPlus.) A third,
+  structural rung fires only when both APIs answer unknown: pump.fun and
+  Raydium LaunchLab bonding-curve pairs have no LP tokens at all
+  (liquidity is program escrow — nothing to pull, shown `·curve`), and
+  PumpSwap pools for pump.fun-minted coins were created by the
+  graduation migration, which locks liquidity permanently (shown `·pf`).
+  Plain Raydium pools are deliberately excluded from this inference —
+  anyone can open one and keep the LP tokens, and a "pump"-suffix mint
+  can be vanity-ground to spoof suffix-based checks — so Raydium pools
+  must prove their lock through RugCheck/GoPlus like everyone else, and
+  real evidence from either API always overrides the structural answer.
 - **Known-risky coins are never listed, period.** Any coin with a
   known-bad check — unlocked LP, live mint or freeze authority,
   Token-2022, whale-heavy holders — is banished from `/scan` entirely

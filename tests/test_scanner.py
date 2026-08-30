@@ -124,7 +124,7 @@ async def test_pool_capped(store):
 class MixedSafety(FakeSafety):
     """Good verdict for MINT_A, unlocked LP for MINT_B."""
 
-    async def check(self, mint):
+    async def check(self, mint, pair=None):
         from gftrade.discovery.safety import SafetyReport
         self.check_calls += 1
         if mint == MINT_B:

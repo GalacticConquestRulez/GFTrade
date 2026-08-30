@@ -18,13 +18,13 @@ def make_pair(mint=MINT_A, symbol="TEST", price_usd=0.001, price_native=None,
               buys_5m=15, sells_5m=7, buys_h1=80, sells_h1=50,
               vol_m5=5_000, vol_h1=30_000, vol_h24=200_000,
               chg_m5=2.0, chg_h1=15.0, chg_h6=20.0, chg_h24=30.0,
-              quote_symbol="SOL", boosts_active=0):
+              quote_symbol="SOL", boosts_active=0, dex_id="raydium"):
     """A pair that passes every hard filter with the default config."""
     if price_native is None:
         price_native = price_usd / SOL_PRICE
     pair = {
         "chainId": "solana",
-        "dexId": "raydium",
+        "dexId": dex_id,
         "url": f"https://dexscreener.com/solana/pair{mint[:6]}",
         "pairAddress": f"PAIR{mint[:8]}",
         "baseToken": {"address": mint, "name": f"{symbol} Token", "symbol": symbol},
@@ -105,7 +105,7 @@ class FakeSafety:
     def cached(self, mint):
         return self._cache.get(mint)
 
-    async def check(self, mint):
+    async def check(self, mint, pair=None):
         self.check_calls += 1
         if mint not in self._cache:
             self.network_calls += 1

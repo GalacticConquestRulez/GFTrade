@@ -128,7 +128,7 @@ class Scanner:
                 return verdict
             safety_budget[0] -= 1
 
-        verdict["safety"] = await self.safety.check(verdict["mint"])
+        verdict["safety"] = await self.safety.check(verdict["mint"], pair=pair)
         verdict["safety_ok"] = verdict["safety"].passes(strict)
         verdict["risk_tier"] = safety_mod.risk_tier(verdict["safety"])
         verdict["score"], verdict["breakdown"] = scoring.score_pair(
@@ -503,7 +503,8 @@ class Scanner:
                     safety_budget[0] -= 1
                 checked += 1
                 try:
-                    verdict["safety"] = await self.safety.check(verdict["mint"])
+                    verdict["safety"] = await self.safety.check(
+                        verdict["mint"], pair=verdict["pair"])
                 except Exception:
                     verdict["safety"] = None
                 verdict["risk_tier"] = safety_mod.risk_tier(verdict["safety"])
