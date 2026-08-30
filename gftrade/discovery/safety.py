@@ -75,7 +75,7 @@ class SafetyReport:
             parts.append("🚨 Token-2022 (sell-trap extensions possible)")
         if config.LP_CHECK_ENABLED:
             source = {"goplus": " ·GP", "curve": " ·curve",
-                      "pumpfun": " ·pf"}.get(self.lp_source, "")
+                      "pumpfun": " ·pf", "onchain": " ·chain"}.get(self.lp_source, "")
             if self.lp_locked_pct is None:
                 parts.append("LP ❓")
             elif self.lp_locked_pct >= config.MIN_LP_LOCKED_PCT:
@@ -134,7 +134,8 @@ class SafetyChecker:
     # spacing the calls keeps the data flowing on modest infrastructure.
     MIN_CHECK_INTERVAL = 0.4
 
-    def __init__(self, rpc, rugcheck=None, cache_ttl: int = None, goplus=None):
+    def __init__(self, rpc, rugcheck=None, cache_ttl: int = None, goplus=None,
+                 onchain=None):
         self._rpc = rpc
         # LP-lock sources, tried in order until one answers. RugCheck is
         # primary; GoPlus is the independent backup so one service's
@@ -145,6 +146,12 @@ class SafetyChecker:
             if source is not None
         ]
         self._goplus = goplus
+        # On-chain checker (lp_onchain.OnchainLp): consulted FIRST because
+        # it's the user's own RPC — no third-party rate limits — but its
+        # answer is accepted ONLY as positive lock evidence (>= threshold).
+        # A low reading falls through to the API chain: our locker list
+        # can't be exhaustive, so it must never banish a coin by itself.
+        self._onchain = onchain
         self._ttl = cache_ttl or config.SAFETY_CACHE_TTL_SECONDS
         self._cache = {}  # mint -> (SafetyReport, fetched_at, ttl)
         self._last_check_at = 0.0
@@ -220,15 +227,27 @@ class SafetyChecker:
             report.error = f"{type(exc).__name__}: {exc}"
 
         if config.LP_CHECK_ENABLED:
-            for source_name, source in self._lp_sources:
+            # Rung 0 — our own RPC reads the pool state directly. Accepted
+            # ONLY as proof of a lock; below-threshold readings are ignored
+            # (never unlock evidence) and the API chain decides instead.
+            if self._onchain is not None and pair is not None:
                 try:
-                    pct = await source.lp_locked_pct(mint)
+                    pct = await self._onchain.lp_locked_pct(mint, pair)
                 except Exception:
-                    pct = None  # unreachable -> try the next source
-                if pct is not None:
+                    pct = None
+                if pct is not None and pct >= config.MIN_LP_LOCKED_PCT:
                     report.lp_locked_pct = pct
-                    report.lp_source = source_name
-                    break
+                    report.lp_source = "onchain"
+            if report.lp_locked_pct is None:
+                for source_name, source in self._lp_sources:
+                    try:
+                        pct = await source.lp_locked_pct(mint)
+                    except Exception:
+                        pct = None  # unreachable -> try the next source
+                    if pct is not None:
+                        report.lp_locked_pct = pct
+                        report.lp_source = source_name
+                        break
             if report.lp_locked_pct is None:
                 # Both real sources came up unknown (young pools often
                 # aren't indexed yet). Venue structure is the last word —

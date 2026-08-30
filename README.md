@@ -81,7 +81,20 @@ when something goes wrong.
   and zero recorded sells is rejected as a honeypot signature — dry-run
   "wins" on such coins would be fiction, since the sim can't know a sell
   transaction would have failed on-chain.
-- LP lock check via a two-source chain: RugCheck first, GoPlus Security
+- LP lock check via a chain of sources, cheapest and most trustworthy
+  first. Rung 0 is **our own RPC reading the chain directly** (no
+  third-party rate limits): for classic Raydium AMM v4 pools the pool
+  account is parsed (validated by program owner, layout size, and that
+  its base/quote mints match the pair — any mismatch means "no verdict",
+  never a wrong verdict), burned LP is computed as lpReserve minus the
+  LP mint's remaining supply, and remaining LP custodied by the
+  incinerator or a recognized locker (Streamflow, Jupiter Lock — an
+  extendable list in `discovery/lp_onchain.py`) counts as locked, shown
+  as `·chain`. The on-chain reading is accepted ONLY as proof of a lock
+  (>= threshold); a low reading is never trusted as unlock evidence —
+  our locker list can't be exhaustive — and falls through to the APIs.
+  Locker unlock timestamps are not yet read (burned LP needs none).
+  Then RugCheck, then GoPlus Security
   as the independent keyless backup when RugCheck is down, rate-limited,
   or hasn't indexed a coin. At least `MIN_LP_LOCKED_PCT` (default 80%)
   of the main pool's LP must be locked or burned. Evidence rules are

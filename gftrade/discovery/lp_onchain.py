@@ -1,0 +1,169 @@
+"""
+On-chain LP lock verification — answering the LP question with the user's
+own RPC instead of waiting on rate-limited third parties.
+
+The pipeline (classic Raydium AMM v4 pools, the standard memecoin venue):
+
+  pool account (the pair address)
+    -> validate: owned by the Raydium v4 program, exact v4 layout size,
+       AND the pool's base/quote mints match the pair we're evaluating
+       (a misparse or wrong account can never produce evidence)
+    -> lp mint + lpReserve (total LP ever minted, kept by the program)
+    -> burned%  = (lpReserve - current LP supply) / lpReserve
+       (burned LP is gone forever — the strongest lock there is)
+    -> custody: largest remaining LP holders whose owner is the
+       incinerator or a recognized locker program count as locked
+    -> % of total LP locked = burned + locker-held
+
+Evidence rules (same asymmetry as the rest of the chain): this checker
+only ever PROVES a lock. A low reading is NOT trusted as unlock evidence
+— our locker list can't be exhaustive, and a coin locked with a locker we
+don't recognize must not be banished on our ignorance — so anything below
+the caller's threshold falls through to RugCheck/GoPlus exactly as
+before. Non-v4 venues (CLMM, Meteora positions, CPMM) return None here
+and use the API chain / structural rules instead.
+
+Known limitation, stated honestly: locker custody is counted as locked
+without reading each locker's unlock timestamp (per-locker account
+layouts — a future refinement). Burned LP needs no timestamp.
+"""
+import base64
+import logging
+
+logger = logging.getLogger(__name__)
+
+# ---------- base58 (no external dependency) ----------
+
+_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_B58_INDEX = {c: i for i, c in enumerate(_B58_ALPHABET)}
+
+
+def b58encode(raw: bytes) -> str:
+    num = int.from_bytes(raw, "big")
+    out = []
+    while num > 0:
+        num, rem = divmod(num, 58)
+        out.append(_B58_ALPHABET[rem])
+    pad = 0
+    for byte in raw:
+        if byte == 0:
+            pad += 1
+        else:
+            break
+    return "1" * pad + "".join(reversed(out))
+
+
+def b58decode(text: str) -> bytes:
+    num = 0
+    for char in text:
+        num = num * 58 + _B58_INDEX[char]  # KeyError on junk = caller's cue
+    raw = num.to_bytes((num.bit_length() + 7) // 8, "big")
+    pad = 0
+    for char in text:
+        if char == "1":
+            pad += 1
+        else:
+            break
+    return b"\x00" * pad + raw
+
+
+# ---------- Raydium AMM v4 pool state ----------
+
+RAYDIUM_V4_PROGRAM = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+V4_STATE_SIZE = 752
+_OFF_BASE_MINT = 400
+_OFF_QUOTE_MINT = 432
+_OFF_LP_MINT = 464
+_OFF_LP_RESERVE = 720
+
+# LP sent here is burned in effect (a common alternative to spl-burn).
+INCINERATOR = "1nc1nerator11111111111111111111111111111111"
+
+# Token-account OWNERS whose LP custody counts as locked. Extend this set
+# as new lockers earn recognition — an unknown locker is simply not
+# counted, which can only make our number lower (safe direction).
+KNOWN_LOCKER_OWNERS = {
+    INCINERATOR,
+    "strmRqUCoQUgGUan5YhzUZa6KqdzwX5L6FpUxfmKg5m",   # Streamflow
+    "LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn",   # Jupiter Lock
+}
+
+
+def parse_v4_pool(data: bytes):
+    """{base_mint, quote_mint, lp_mint, lp_reserve} from a Raydium AMM v4
+    liquidity-state account, or None when the bytes aren't that layout."""
+    if not isinstance(data, bytes) or len(data) != V4_STATE_SIZE:
+        return None
+    return {
+        "base_mint": b58encode(data[_OFF_BASE_MINT:_OFF_BASE_MINT + 32]),
+        "quote_mint": b58encode(data[_OFF_QUOTE_MINT:_OFF_QUOTE_MINT + 32]),
+        "lp_mint": b58encode(data[_OFF_LP_MINT:_OFF_LP_MINT + 32]),
+        "lp_reserve": int.from_bytes(
+            data[_OFF_LP_RESERVE:_OFF_LP_RESERVE + 8], "little"),
+    }
+
+
+class OnchainLp:
+    """LP locked % straight from chain state. Never raises; every
+    unverifiable condition returns None (= no verdict, consult the APIs)."""
+
+    def __init__(self, rpc):
+        self._rpc = rpc
+
+    async def lp_locked_pct(self, mint: str, pair: dict):
+        try:
+            return await self._compute(pair)
+        except Exception:
+            logger.debug("onchain LP check failed for %s", mint, exc_info=True)
+            return None
+
+    async def _compute(self, pair: dict):
+        if not isinstance(pair, dict):
+            return None
+        if str(pair.get("dexId") or "").strip().lower() != "raydium":
+            return None  # v4 layout only; other venues use the API chain
+        pool_addr = pair.get("pairAddress")
+        if not pool_addr:
+            return None
+
+        owner, data = await self._rpc.get_account_raw(pool_addr)
+        if owner != RAYDIUM_V4_PROGRAM:
+            return None  # CPMM/CLMM/unknown program: not our layout
+        pool = parse_v4_pool(data)
+        if pool is None:
+            return None
+
+        # The pool must be about the tokens the pair says it is — this is
+        # the guard that turns any layout drift into "no verdict" instead
+        # of a wrong verdict.
+        pair_tokens = {
+            (pair.get("baseToken") or {}).get("address"),
+            (pair.get("quoteToken") or {}).get("address"),
+        }
+        if {pool["base_mint"], pool["quote_mint"]} != pair_tokens:
+            return None
+
+        lp_reserve = pool["lp_reserve"]
+        if lp_reserve <= 0:
+            return None
+        lp_info = await self._rpc.get_mint_info(pool["lp_mint"])
+        if lp_info is None:
+            return None
+        supply = int(lp_info.get("supply") or 0)
+        if supply > lp_reserve:
+            return None  # bookkeeping we don't understand -> no verdict
+
+        locked = lp_reserve - supply  # burned: supply that no longer exists
+        if supply > 0:
+            largest = await self._rpc.get_token_largest_accounts(pool["lp_mint"])
+            addresses = [a.get("address") for a in largest if a.get("address")]
+            owners = await self._rpc.get_token_account_owners(addresses[:20])
+            by_address = dict(zip(addresses, owners))
+            for account in largest:
+                holder = by_address.get(account.get("address"))
+                if holder in KNOWN_LOCKER_OWNERS:
+                    try:
+                        locked += int(account.get("amount") or 0)
+                    except (TypeError, ValueError):
+                        continue
+        return 100.0 * min(locked, lp_reserve) / lp_reserve

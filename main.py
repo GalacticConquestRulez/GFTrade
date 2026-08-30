@@ -20,6 +20,7 @@ from gftrade.clients.geckoterminal import GeckoTerminal
 from gftrade.clients.goplus import GoPlus
 from gftrade.clients.jupiter import Jupiter
 from gftrade.clients.rugcheck import RugCheck
+from gftrade.discovery.lp_onchain import OnchainLp
 from gftrade.discovery.safety import SafetyChecker
 from gftrade.discovery.trend import PriceHistory
 from gftrade.factors import FactorLog
@@ -76,7 +77,7 @@ async def run() -> None:
     # GoPlus is constructed regardless of LP_CHECK_ENABLED: its authority
     # backfill (mint/freeze when RPC reads fail) is independent of LP checks.
     goplus = GoPlus(http)
-    safety = SafetyChecker(rpc, rugcheck, goplus=goplus)
+    safety = SafetyChecker(rpc, rugcheck, goplus=goplus, onchain=OnchainLp(rpc))
     factors = FactorLog()
     prices = PriceHistory()
     gecko = GeckoTerminal(http)

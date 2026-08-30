@@ -6,6 +6,7 @@ depending on solana-py) avoids the historically fragile solana/solders
 version matrix; solders alone handles keys and transaction signing.
 """
 import asyncio
+import base64
 import itertools
 
 import httpx
@@ -62,6 +63,40 @@ class SolanaRpc:
         """Top ~20 token accounts for a mint: [{address, amount(str raw)}...]."""
         result = await self._call("getTokenLargestAccounts", [mint])
         return (result or {}).get("value") or []
+
+    async def get_account_raw(self, pubkey: str):
+        """(owner_program, data_bytes) for any account, or (None, None) when
+        it doesn't exist. Used to parse non-token program state (AMM pools)."""
+        result = await self._call(
+            "getAccountInfo", [pubkey, {"encoding": "base64"}]
+        )
+        value = (result or {}).get("value")
+        if not value:
+            return None, None
+        data = value.get("data")
+        raw = b""
+        if isinstance(data, list) and data and isinstance(data[0], str):
+            raw = base64.b64decode(data[0])
+        return value.get("owner"), raw
+
+    async def get_token_account_owners(self, addresses: list) -> list:
+        """The owner wallet of each SPL token account, aligned with the
+        input list; None where an entry is missing or not a token account.
+        getMultipleAccounts caps at 100 addresses — callers pass fewer."""
+        if not addresses:
+            return []
+        result = await self._call(
+            "getMultipleAccounts", [addresses, {"encoding": "jsonParsed"}]
+        )
+        owners = []
+        for value in (result or {}).get("value") or []:
+            owner = None
+            if isinstance(value, dict):
+                parsed = ((value.get("data") or {}).get("parsed") or {})
+                if parsed.get("type") == "account":
+                    owner = (parsed.get("info") or {}).get("owner")
+            owners.append(owner)
+        return owners
 
     async def get_token_balance(self, owner: str, mint: str):
         """Sum of the owner's token accounts for `mint`.
