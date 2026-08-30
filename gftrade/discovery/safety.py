@@ -123,6 +123,14 @@ class SafetyChecker:
         # duplicate fetches or leapfrog the pacing sleep.
         self._lock = asyncio.Lock()
 
+    def cached(self, mint: str):
+        """The fresh cached report for a mint, or None — lets callers see
+        whether a check() would be instant or would hit the network."""
+        cached = self._cache.get(mint)
+        if cached and time.time() - cached[1] < cached[2]:
+            return cached[0]
+        return None
+
     async def check(self, mint: str) -> SafetyReport:
         cached = self._cache.get(mint)
         if cached and time.time() - cached[1] < cached[2]:

@@ -98,9 +98,19 @@ class FakeDex:
 class FakeSafety:
     def __init__(self, report=GOOD_SAFETY):
         self.report = report
+        self.check_calls = 0     # every check() invocation (cache hits included)
+        self.network_calls = 0   # checks that would hit the network (uncached)
+        self._cache = {}
+
+    def cached(self, mint):
+        return self._cache.get(mint)
 
     async def check(self, mint):
+        self.check_calls += 1
+        if mint not in self._cache:
+            self.network_calls += 1
         report = SafetyReport(**{**self.report.__dict__, "mint": mint})
+        self._cache[mint] = report
         return report
 
 

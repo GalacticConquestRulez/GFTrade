@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 POOL_NO_PAIR_GRACE_HOURS = 3   # drop pool entries that never produce a tradable pair
 EVAL_BATCH_PER_TICK = 120      # pool mints re-checked per tick (4 DexScreener calls)
 
+# Cap on UNCACHED safety checks per pass. Each one can cost seconds of
+# paced network calls (worse when a source is timing out), and an
+# unbounded pass once crawled for minutes — coins past the cap simply
+# stay ❓ this pass and get checked on the next; the cache makes coverage
+# catch up quickly. Cached checks are always free and never counted.
+MAX_UNCACHED_SAFETY_PER_PASS = 8
+SCAN_NOW_SAFETY_BUDGET = 12
+
 
 class Scanner:
     def __init__(self, store, dex, engine, safety_checker, gecko=None,
@@ -81,8 +89,15 @@ class Scanner:
 
     # ---------- evaluation ----------
 
-    async def evaluate_pair(self, pair: dict, boosted: set) -> dict:
-        """Full verdict for one pair: screen -> safety -> patterns -> score."""
+    async def evaluate_pair(self, pair: dict, boosted: set,
+                            safety_budget: list = None) -> dict:
+        """Full verdict for one pair: screen -> safety -> patterns -> score.
+
+        `safety_budget` is a single-element mutable counter of UNCACHED
+        safety checks this pass may still spend. When it's exhausted, the
+        coin is evaluated with safety unknown (❓ this pass, retried next
+        pass) instead of stalling the pass on paced network calls. None
+        (the default, used by the on-demand token card) means unlimited."""
         ok, reasons = filters.screen_pair(pair, boosted,
                                           overrides=self.store.settings)
         verdict = {
@@ -102,10 +117,20 @@ class Scanner:
         if not ok:
             return verdict
         strict = self.store.settings["security_strict"]
+        verdict["patterns"] = patterns.scan(pair)
+
+        if safety_budget is not None and self.safety.cached(verdict["mint"]) is None:
+            if safety_budget[0] <= 0:
+                # Budget spent: stay ❓ this pass rather than stalling it.
+                verdict["score"], verdict["breakdown"] = scoring.score_pair(
+                    pair, None, strict
+                )
+                return verdict
+            safety_budget[0] -= 1
+
         verdict["safety"] = await self.safety.check(verdict["mint"])
         verdict["safety_ok"] = verdict["safety"].passes(strict)
         verdict["risk_tier"] = safety_mod.risk_tier(verdict["safety"])
-        verdict["patterns"] = patterns.scan(pair)
         verdict["score"], verdict["breakdown"] = scoring.score_pair(
             pair, verdict["safety"], strict
         )
@@ -223,6 +248,7 @@ class Scanner:
         batch = batch[:EVAL_BATCH_PER_TICK]
         if not batch:
             return events
+        safety_budget = [MAX_UNCACHED_SAFETY_PER_PASS]
         pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID, batch)
 
         best_by_mint = {}
@@ -253,7 +279,8 @@ class Scanner:
                 continue
 
             stats["checked"] += 1
-            verdict = await self.evaluate_pair(pair, boosted)
+            verdict = await self.evaluate_pair(pair, boosted,
+                                               safety_budget=safety_budget)
             if self.factors is not None:
                 try:  # every evaluated candidate is logged, passed or failed
                     self.factors.log_snapshot(verdict)
@@ -432,8 +459,10 @@ class Scanner:
 
             strict = self.store.settings["security_strict"]
             evaluated = len(best_by_mint)
+            safety_budget = [SCAN_NOW_SAFETY_BUDGET]
             for mint, pair in best_by_mint.items():
-                verdict = await self.evaluate_pair(pair, boosted)
+                verdict = await self.evaluate_pair(pair, boosted,
+                                                   safety_budget=safety_budget)
                 if verdict["screened_ok"]:
                     if verdict["risk_tier"] == "risky":
                         banned += 1  # unlocked LP / live authorities: never listed
@@ -467,6 +496,11 @@ class Scanner:
             for verdict in near_misses:
                 if len(verdicts) >= self.SCAN_MIN_LIST or checked >= self.SCAN_MIN_LIST * 2:
                     break
+                cached = self.safety.cached(verdict["mint"])
+                if cached is None:
+                    if safety_budget[0] <= 0:
+                        break  # can't verify more this sweep; unshown beats unvetted
+                    safety_budget[0] -= 1
                 checked += 1
                 try:
                     verdict["safety"] = await self.safety.check(verdict["mint"])

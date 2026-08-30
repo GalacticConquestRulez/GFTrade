@@ -145,7 +145,7 @@ class GoPlus:
             resp = await self._client.get(
                 f"{self.api_base}/solana/token_security",
                 params={"contract_addresses": mint},
-                timeout=12,
+                timeout=6,
             )
             if resp.status_code == 200:
                 body = resp.json()

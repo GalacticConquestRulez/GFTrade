@@ -62,7 +62,7 @@ class RugCheck:
             await asyncio.sleep(wait)
         self._last_call_at = time.time()
         resp = await self._client.get(
-            f"{self.api_base}/tokens/{mint}/report", timeout=12
+            f"{self.api_base}/tokens/{mint}/report", timeout=6
         )
         if resp.status_code != 200:
             return None

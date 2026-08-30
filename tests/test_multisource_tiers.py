@@ -47,10 +47,12 @@ async def test_scan_sorts_by_tier_before_market_quality(store):
         mints["risk"]: RISKY,
     }
 
-    class TierSafety:
+    class TierSafety(FakeSafety):
         async def check(self, mint):
-            base = reports[mint]
-            return SafetyReport(**{**base.__dict__, "mint": mint})
+            self.check_calls += 1
+            report = SafetyReport(**{**reports[mint].__dict__, "mint": mint})
+            self._cache[mint] = report
+            return report
 
     pairs = {
         mints["safe"]: make_strong_pair(mint=mints["safe"], symbol="SAFE",
@@ -141,11 +143,14 @@ async def test_risky_near_misses_cannot_fill_the_list(store):
     """Near-misses skip safety during screening, but nothing reaches the
     visible list without proving it isn't known-bad — a thin market must
     not become a backdoor for unlocked-LP coins."""
-    class RiskySafety:
+    class RiskySafety(FakeSafety):
         async def check(self, mint):
-            return SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
-                                top10_pct=10.0, lp_locked_pct=2.0,
-                                standard_token=True)
+            self.check_calls += 1
+            report = SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
+                                  top10_pct=10.0, lp_locked_pct=2.0,
+                                  standard_token=True)
+            self._cache[mint] = report
+            return report
 
     # every coin fails the liquidity screen -> all are near-miss candidates
     pairs = {f"NM{i:02d}" + "w" * 36: make_pair(mint=f"NM{i:02d}" + "w" * 36,

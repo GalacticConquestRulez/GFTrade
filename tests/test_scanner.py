@@ -121,17 +121,22 @@ async def test_pool_capped(store):
     assert len(scanner.pool) <= config.CANDIDATE_POOL_MAX
 
 
-class MixedSafety:
+class MixedSafety(FakeSafety):
     """Good verdict for MINT_A, unlocked LP for MINT_B."""
 
     async def check(self, mint):
         from gftrade.discovery.safety import SafetyReport
+        self.check_calls += 1
         if mint == MINT_B:
-            return SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
-                                top10_pct=10.0, lp_locked_pct=3.0,  # unlocked LP
-                                standard_token=True)
-        return SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
-                            top10_pct=10.0, lp_locked_pct=100.0, standard_token=True)
+            report = SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
+                                  top10_pct=10.0, lp_locked_pct=3.0,  # unlocked LP
+                                  standard_token=True)
+        else:
+            report = SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
+                                  top10_pct=10.0, lp_locked_pct=100.0,
+                                  standard_token=True)
+        self._cache[mint] = report
+        return report
 
 
 def build_mixed_scanner(store):

@@ -50,7 +50,14 @@ class Deps:
 
 
 def build_application(deps: Deps) -> Application:
-    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+    # concurrent_updates is essential: PTB's default processes updates ONE
+    # AT A TIME, so a single slow handler (a /scan sweep waiting on a slow
+    # safety source) would queue every later button tap and command behind
+    # it — which reads as "the buttons don't work".
+    app = (Application.builder()
+           .token(config.TELEGRAM_BOT_TOKEN)
+           .concurrent_updates(True)
+           .build())
     app.bot_data["deps"] = deps
 
     app.add_handler(CommandHandler("start", handlers.cmd_start))
