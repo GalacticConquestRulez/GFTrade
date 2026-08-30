@@ -283,11 +283,12 @@ async def test_scan_serves_fresh_cache_instantly(store):
     from types import SimpleNamespace
     from gftrade.tg.handlers import scan_cache_fresh
 
+    rows = [{"mint": "x"}]
     deps = SimpleNamespace(scanner=SimpleNamespace(last_scan=None))
     assert not scan_cache_fresh(deps)  # no cache -> must sweep
-    deps.scanner.last_scan = {"verdicts": [], "at": _time.time() - 30}
-    assert scan_cache_fresh(deps)  # 30s old -> instant render
-    deps.scanner.last_scan = {"verdicts": [], "at": _time.time() - 200}
+    deps.scanner.last_scan = {"verdicts": rows, "at": _time.time() - 30}
+    assert scan_cache_fresh(deps)  # 30s old with rows -> instant render
+    deps.scanner.last_scan = {"verdicts": rows, "at": _time.time() - 200}
     assert not scan_cache_fresh(deps)  # stale -> live sweep
 
 
@@ -302,3 +303,45 @@ async def test_safety_checker_cached_semantics():
     assert checker.cached("MINT") is report  # fresh cache -> instant
     checker._cache["MINT"] = (report, 0.0, 1.0)  # simulate expiry
     assert checker.cached("MINT") is None  # stale = not cached
+
+
+async def test_empty_cache_is_never_served_as_fresh(store):
+    """An empty list is the one result worth re-checking live: serving it
+    from cache reports 'nothing listable' without having looked."""
+    import time as _time
+    from types import SimpleNamespace
+    from gftrade.tg.handlers import scan_cache_fresh
+
+    deps = SimpleNamespace(scanner=SimpleNamespace(
+        last_scan={"verdicts": [], "at": _time.time()}))
+    assert not scan_cache_fresh(deps)
+    deps.scanner.last_scan = {"verdicts": [{"mint": "x"}], "at": _time.time()}
+    assert scan_cache_fresh(deps)
+
+
+async def test_background_sweep_vets_near_misses_so_the_list_fills(store):
+    """Near-misses fail the market screens, so the alert path's prefetch
+    never touches them. The sweep must vet them itself or a market with
+    no screen-passers leaves /scan permanently empty."""
+    from gftrade.scanner import Scanner
+    from gftrade.trading.engine import TradingEngine
+
+    # every coin fails the liquidity screen -> all are near-misses
+    pairs = {mint_r(i): make_pair(mint=mint_r(i), symbol=f"THIN{i}",
+                                  liquidity=4_000, market_cap=40_000,
+                                  chg_h1=5 + i)
+             for i in range(12)}
+    dex = FakeDex(pairs_by_mint=pairs,
+                  profiles=[{"chainId": "solana", "tokenAddress": m} for m in pairs])
+    safety = FakeSafety()
+    scanner = Scanner(store, dex, TradingEngine(store, dex, dry_run=True), safety)
+
+    await scanner.tick()
+    listed = scanner.last_scan["verdicts"]
+    assert listed, "a sweep with no screen-passers must still fill from near-misses"
+    assert all(v["safety"] is not None for v in listed)  # nothing unvetted shown
+
+    # and successive sweeps converge toward a full list as the cache warms
+    before = len(listed)
+    await scanner.tick()
+    assert len(scanner.last_scan["verdicts"]) >= before

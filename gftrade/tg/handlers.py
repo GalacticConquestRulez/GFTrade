@@ -150,8 +150,13 @@ SCAN_FRESH_SECONDS = 90
 
 
 def scan_cache_fresh(deps) -> bool:
+    """Whether the cached list can be served instantly. An EMPTY cached
+    list never counts as fresh: showing "nothing listable" without having
+    actually looked is the worst possible answer, so an empty cache falls
+    through to a live sweep instead."""
     cache = deps.scanner.last_scan
-    return cache is not None and time.time() - cache["at"] < SCAN_FRESH_SECONDS
+    return bool(cache and cache.get("verdicts")
+                and time.time() - cache["at"] < SCAN_FRESH_SECONDS)
 
 
 def scan_page_view(deps, page: int):

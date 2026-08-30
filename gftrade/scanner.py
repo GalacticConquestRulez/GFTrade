@@ -38,6 +38,12 @@ EVAL_BATCH_PER_TICK = 120      # pool mints re-checked per tick (4 DexScreener c
 # catch up quickly. Cached checks are always free and never counted.
 MAX_UNCACHED_SAFETY_PER_PASS = 8
 SCAN_NOW_SAFETY_BUDGET = 12
+# Separate budget for vetting NEAR-MISSES (coins that failed the market
+# screens) so the browsable /scan list can fill. It is deliberately its
+# own allowance rather than a share of the one above: near-miss vetting
+# is for looking at, and must never starve the alert path, which is the
+# one that moves money.
+NEAR_MISS_SAFETY_BUDGET = 6
 
 
 class Scanner:
@@ -410,16 +416,20 @@ class Scanner:
         # instantly from at-most-90s-old data instead of paying for its
         # own minute of API calls.
         try:
-            self._refresh_scan_cache(scan_verdicts, stats["checked"], drops)
+            await self._refresh_scan_cache(scan_verdicts, stats["checked"], drops)
         except Exception:
             logger.exception("scan cache refresh failed")
         return events
 
-    def _refresh_scan_cache(self, verdicts: list, evaluated: int,
-                            drops: dict) -> None:
+    async def _refresh_scan_cache(self, verdicts: list, evaluated: int,
+                                  drops: dict) -> None:
         """Rebuild the ranked /scan browsing list from a discovery sweep's
-        verdicts using ONLY cached safety — zero extra API spend. Same
-        rules as scan_now: risky is banished, near-misses fill up to
+        verdicts. Screen-passers are already vetted (the sweep warmed
+        them); the best near-misses get vetted here on their own budget,
+        because they fail the market screens and so are never touched by
+        the alert path's prefetch — without this the list could only ever
+        contain screen-passers, and a sweep with none left it empty.
+        Same rules as scan_now: risky is banished, near-misses fill up to
         SCAN_MIN_LIST, nothing unvetted is ever shown."""
         strict = self.store.settings["security_strict"]
         banned = 0
@@ -444,6 +454,22 @@ class Scanner:
         near_misses.sort(key=lambda v: -v.get("market_score", v["score"]))
         listed = screened[:30]
         if len(listed) < self.SCAN_MIN_LIST:
+            # Vet the strongest near-misses concurrently, newest cache
+            # first, so successive sweeps converge on a full list.
+            need = self.SCAN_MIN_LIST - len(listed)
+            uncached = [v for v in near_misses[:need + NEAR_MISS_SAFETY_BUDGET]
+                        if self.safety.cached(v["mint"]) is None]
+            to_check = uncached[:NEAR_MISS_SAFETY_BUDGET]
+            if to_check:
+                async def vet(verdict):
+                    try:
+                        await self.safety.check(verdict["mint"],
+                                                pair=verdict["pair"])
+                    except Exception:
+                        logger.exception("near-miss safety check failed for %s",
+                                         verdict["mint"])
+
+                await asyncio.gather(*(vet(v) for v in to_check))
             for verdict in near_misses:
                 if len(listed) >= self.SCAN_MIN_LIST:
                     break
