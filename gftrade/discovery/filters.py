@@ -116,3 +116,38 @@ def screen_pair(pair: dict, boosted_addresses: set = None, now_ms: float = None,
         )
 
     return (len(reasons) == 0, reasons)
+
+
+# Stable buckets for the human-readable reasons above, so the scanner can
+# report WHICH screen is rejecting the most coins (see /filters). The
+# mapping lives next to the strings it classifies; a test asserts every
+# reason screen_pair can emit lands in a real bucket, so the two can't
+# drift apart silently.
+# Each needle must be unique to ONE reason string above. Beware of short
+# words: "min" alone also matches "liq/mcap 0.000 below min 0.05".
+REASON_CODES = [
+    ("boosted", "boosted/paid placement"),
+    ("quote token", "quote token not SOL/USDC"),
+    ("no pair creation", "no creation timestamp"),
+    ("liq/mcap", "liquidity vs market-cap band"),
+    ("pair only", "too young"),
+    ("exceeds max", "too old"),
+    ("1h volume", "volume below floor"),
+    ("liquidity $", "liquidity below floor"),
+    ("no market cap", "no market-cap data"),
+    ("buys in 5m", "too few buys (5m)"),
+    ("buys in 1h", "too few buys (1h)"),
+    ("wash trading", "buy/sell ratio (wash-trading cap)"),
+    ("ZERO sells", "honeypot signature (no sells)"),
+]
+
+
+def classify_reason(reason: str) -> str:
+    """Bucket one rejection reason into a stable label for the /filters
+    histogram. Unrecognized text returns "other" — a test asserts that
+    never happens for reasons screen_pair actually emits."""
+    text = str(reason or "")
+    for needle, label in REASON_CODES:
+        if needle in text:
+            return label
+    return "other"

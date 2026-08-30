@@ -179,21 +179,58 @@ class Scanner:
         extension = verdict.get("extension_pct")
         return bool(limit) and extension is not None and extension > limit
 
+    # Funnel stages, in the order a candidate must clear them.
+    FUNNEL_STAGES = ["no tradable pair yet", "aged out of window",
+                     "market screens", "known-risky", "safety unproven",
+                     "no pattern firing", "score too low", "too extended",
+                     "alerted"]
+
+    def _stage(self, stats: dict, stage: str) -> None:
+        stats["funnel"][stage] = stats["funnel"].get(stage, 0) + 1
+
+    def _tally(self, stats: dict, verdict: dict) -> None:
+        """Record where this candidate dropped out. One coin can fail
+        several market screens at once, so every reason is counted — a
+        screen's count is 'how many coins this screen rejected', not a
+        share of a whole."""
+        if not verdict["screened_ok"]:
+            for reason in verdict["reject_reasons"]:
+                code = filters.classify_reason(reason)
+                stats["screen_rejects"][code] = \
+                    stats["screen_rejects"].get(code, 0) + 1
+            stage = "market screens"
+        elif verdict["risk_tier"] == "risky":
+            stage = "known-risky"
+        elif not self._alert_safety_ok(verdict):
+            stage = "safety unproven"
+        elif not verdict["patterns"]:
+            stage = "no pattern firing"
+        elif verdict["score"] < self.store.settings["min_alert_score"]:
+            stage = "score too low"
+        elif self._too_extended(verdict):
+            stage = "too extended"
+        else:
+            stage = "alerted"
+        self._stage(stats, stage)
+
+    def _alert_safety_ok(self, verdict: dict) -> bool:
+        """Whether safety clears the ALERT bar (autobuy is stricter)."""
+        safety = verdict["safety"]
+        return bool(verdict["safety_ok"] or (
+            self.store.settings.get("alert_unverified")
+            and safety is not None
+            and safety.passes(strict=False)
+        ))
+
     def _qualifies(self, verdict: dict) -> bool:
         """Alert gate. Fully-safe (✅) coins always qualify on pattern+score.
         With alert_unverified on, ❓-only coins (no check known-bad, some
         unverifiable) qualify too — for manual flips. Known-bad coins never
         alert. Autobuy applies its own stricter ✅-only check on top."""
         settings = self.store.settings
-        safety = verdict["safety"]
-        safety_acceptable = verdict["safety_ok"] or (
-            settings.get("alert_unverified")
-            and safety is not None
-            and safety.passes(strict=False)  # lenient = nothing known-bad
-        )
         return (
             verdict["screened_ok"]
-            and safety_acceptable
+            and self._alert_safety_ok(verdict)
             and verdict["patterns"]
             and verdict["score"] >= settings["min_alert_score"]
             and not self._too_extended(verdict)
@@ -208,7 +245,10 @@ class Scanner:
         (both on) is the one-shot behavior tests and callers rely on."""
         events = []
         stats = {"profiles_new": 0, "pool": 0, "checked": 0, "passed_screen": 0,
-                 "signals": 0}
+                 "signals": 0,
+                 # Where candidates actually die, so "it's too selective"
+                 # can be answered with counts instead of guesses (/filters).
+                 "screen_rejects": {}, "funnel": {}}
 
         if exits:
             # Manage what we already hold — exits take priority over entries.
@@ -312,12 +352,14 @@ class Scanner:
             pair = best_by_mint.get(mint)
             if pair is None:
                 drops["no_pair"] += 1
+                self._stage(stats, "no tradable pair yet")
                 if now - self.pool[mint] > POOL_NO_PAIR_GRACE_HOURS * 3600:
                     del self.pool[mint]
                 continue
             age_hours = filters.pair_age_hours(pair)
             if age_hours > settings.get("max_pair_age_hours", config.MAX_PAIR_AGE_HOURS):
                 drops["too_old"] += 1
+                self._stage(stats, "aged out of window")
                 del self.pool[mint]  # aged out of our window for good
                 continue
 
@@ -332,6 +374,7 @@ class Scanner:
                     logger.exception("factor logging failed")
             if verdict["screened_ok"]:
                 stats["passed_screen"] += 1
+            self._tally(stats, verdict)
             if not self._qualifies(verdict):
                 continue
             if self.store.is_muted(mint) or self.store.recently_alerted(mint):

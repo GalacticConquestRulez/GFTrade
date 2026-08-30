@@ -30,6 +30,7 @@ BOT_COMMANDS = [
     BotCommand("positions", "Open positions with sell buttons"),
     BotCommand("trades", "Performance and recent trades"),
     BotCommand("factors", "Which factors predict winners (analysis)"),
+    BotCommand("filters", "Why coins are being filtered out"),
     BotCommand("settings", "Runtime settings"),
     BotCommand("wallet", "Address and balance"),
     BotCommand("panic", "Market-sell everything"),
@@ -66,6 +67,7 @@ def build_application(deps: Deps) -> Application:
     app.add_handler(CommandHandler(["positions", "sell"], handlers.cmd_positions))
     app.add_handler(CommandHandler("trades", handlers.cmd_trades))
     app.add_handler(CommandHandler("factors", handlers.cmd_factors))
+    app.add_handler(CommandHandler("filters", handlers.cmd_filters))
     app.add_handler(CommandHandler("settings", handlers.cmd_settings))
     app.add_handler(CommandHandler("wallet", handlers.cmd_wallet))
     app.add_handler(CommandHandler("scan", handlers.cmd_scan))

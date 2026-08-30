@@ -46,7 +46,11 @@ async def test_scan_fills_with_ranked_near_misses(store):
     verdicts = await scanner.scan_now()
     assert len(verdicts) == Scanner.SCAN_MIN_LIST  # never uselessly empty
     assert all(not v["screened_ok"] for v in verdicts)
-    scores = [v["score"] for v in verdicts]
+    # Ranked by market_score — the key scan_now actually sorts on since
+    # risk and quality were split. Asserting on the composite "score"
+    # here was flaky: equal market_scores leave its order unconstrained,
+    # and it carries a time-sensitive age term that flips ties run to run.
+    scores = [v["market_score"] for v in verdicts]
     assert scores == sorted(scores, reverse=True)  # best to worst
     assert all(v["reject_reasons"] for v in verdicts)
     # rendering shows the near-miss badge and the tuning hint

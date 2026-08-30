@@ -543,6 +543,55 @@ def wallet_text(dry_run: bool, address: str = None, balance_sol: float = None,
     ])
 
 
+def filters_text(stats: dict, settings: dict, pool_size: int) -> str:
+    """Where the last sweep's candidates actually died, plus the current
+    thresholds. Answers 'why am I seeing so few coins' with counts."""
+    funnel = stats.get("funnel") or {}
+    rejects = stats.get("screen_rejects") or {}
+    checked = stats.get("checked", 0)
+    if not checked:
+        return ("No sweep has completed yet — give the scanner a couple of "
+                "minutes after a restart, then try /filters again.")
+
+    lines = [f"<b>Funnel — last sweep</b> ({checked} candidates evaluated, "
+             f"{pool_size} in pool)", ""]
+    from ..scanner import Scanner
+    for stage in Scanner.FUNNEL_STAGES:
+        count = funnel.get(stage, 0)
+        if not count:
+            continue
+        mark = "✅" if stage == "alerted" else "▫️"
+        lines.append(f"{mark} {esc(stage)}: <b>{count}</b>")
+
+    if rejects:
+        lines += ["", "<b>Which market screens rejected coins</b> "
+                      "(a coin can fail several):"]
+        for code, count in sorted(rejects.items(), key=lambda kv: -kv[1]):
+            lines.append(f"  · {esc(code)}: <b>{count}</b>")
+
+    lines += ["", "<b>Current thresholds</b> (✏️ = tunable in /settings):",
+              f"  ✏️ age window: {settings.get('min_pair_age_minutes', 0):g}m "
+              f"– {settings.get('max_pair_age_hours', 0):g}h",
+              f"  ✏️ min liquidity: ${settings.get('min_liquidity_usd', 0):,.0f}",
+              f"  ✏️ min 1h volume: ${settings.get('min_volume_h1_usd', 0):,.0f}",
+              f"  ✏️ min buys 1h: {settings.get('min_buys_h1', 0):g}",
+              f"  ✏️ alert score: {settings.get('min_alert_score', 0)} · "
+              f"autobuy score: {settings.get('min_autobuy_score', 0)}",
+              f"  ✏️ max extension: {settings.get('max_entry_extension_pct', 0):g}%",
+              f"  ✏️ strict safety: "
+              f"{'ON (unproven = rejected)' if settings.get('security_strict') else 'off'}",
+              f"  ✏️ alert ❓ unverified: "
+              f"{'ON' if settings.get('alert_unverified') else 'off'}",
+              f"  liq/mcap band: {config.MIN_LIQ_TO_MCAP_RATIO}"
+              f"–{config.MAX_LIQ_TO_MCAP_RATIO} (config.py)",
+              f"  min buys 5m: {config.MIN_BUYS_5M} · "
+              f"max buy/sell ratio: {config.MAX_BUY_SELL_IMBALANCE:g} (config.py)",
+              f"  exclude promoted: "
+              f"{'ON' if config.EXCLUDE_BOOSTED else 'off'} (config.py)"]
+    lines += ["", "The biggest bar above is what to loosen first."]
+    return "\n".join(lines)
+
+
 def start_text(dry_run: bool, summary: dict, scanner_on: bool, pool_size: int,
                last_tick_at: float = None, tick_stats: dict = None,
                feed_status: dict = None, version: str = None,

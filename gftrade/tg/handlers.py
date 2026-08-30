@@ -305,6 +305,17 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @authorized_only
+async def cmd_filters(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Where the last sweep's candidates dropped out, and the thresholds
+    that did it — the answer to 'why so few coins?'."""
+    deps = deps_of(context)
+    text = fmt.filters_text(deps.scanner.last_tick_stats,
+                            deps.store.settings, len(deps.scanner.pool))
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML,
+                                    disable_web_page_preview=True)
+
+
+@authorized_only
 async def cmd_factors(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deps = deps_of(context)
     if deps.factors is None:
