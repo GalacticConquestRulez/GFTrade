@@ -77,7 +77,7 @@ def test_empty_scan_renders_explanation_with_rescan():
     text, markup = scan_page_view(deps, 0)
     assert "Scan finished" in text
     callbacks = [b.callback_data for b in buttons_of(markup)]
-    assert "scan" in callbacks  # re-scan stays available
+    assert "scanf" in callbacks  # re-scan (forced live sweep) stays available
     assert not any((c or "").startswith("scp:") for c in callbacks)
 
 

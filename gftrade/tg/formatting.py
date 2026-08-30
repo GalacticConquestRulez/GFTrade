@@ -380,7 +380,8 @@ def risk_reasons(report) -> list:
 
 def scan_page_text(verdicts: list, page: int, page_size: int,
                    evaluated: int = None, hidden_unsafe: int = 0,
-                   banned: int = 0, drops: dict = None) -> str:
+                   banned: int = 0, drops: dict = None,
+                   age_seconds: float = None) -> str:
     if not verdicts:
         if hidden_unsafe:
             return (
@@ -435,6 +436,9 @@ def scan_page_text(verdicts: list, page: int, page_size: int,
         f"✅ {safe_count} fully safe · {screened_count} pass screens · "
         f"only ✅ can be alerted or auto-bought",
     ]
+    if age_seconds is not None and age_seconds > 10:
+        lines.insert(1, f"🕐 updated {age_seconds:.0f}s ago — "
+                        "🔄 Re-scan for a live sweep")
     if banned:
         lines.append(f"🛡 {banned} known-risky removed — unlocked LP or live "
                      "authorities are never listed")

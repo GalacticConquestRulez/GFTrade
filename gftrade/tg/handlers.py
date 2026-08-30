@@ -143,6 +143,15 @@ def start_view(deps):
 
 SCAN_PAGE_SIZE = 5
 SCAN_CACHE_MAX_AGE = 600  # seconds a cached /scan stays pageable
+# The background scanner refreshes the list every sweep (~90s), so a scan
+# request younger than one sweep interval renders instantly from cache;
+# the 🔄 Re-scan button always forces a live sweep.
+SCAN_FRESH_SECONDS = 90
+
+
+def scan_cache_fresh(deps) -> bool:
+    cache = deps.scanner.last_scan
+    return cache is not None and time.time() - cache["at"] < SCAN_FRESH_SECONDS
 
 
 def scan_page_view(deps, page: int):
@@ -164,7 +173,9 @@ def scan_page_view(deps, page: int):
                               evaluated=cache.get("evaluated"),
                               hidden_unsafe=hidden,
                               banned=cache.get("banned", 0),
-                              drops=cache.get("drops"))
+                              drops=cache.get("drops"),
+                              age_seconds=(time.time() - cache["at"])
+                              if cache.get("at") else None)
     markup = kb.scan_page_kb(chunk, page, total_pages,
                              start_rank=page * SCAN_PAGE_SIZE + 1)
     return text, markup
@@ -271,8 +282,16 @@ async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @authorized_only
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     deps = deps_of(context)
+    if scan_cache_fresh(deps):
+        # The background scanner refreshed this within the last sweep —
+        # render instantly; 🔄 Re-scan forces a live sweep if wanted.
+        text, markup = scan_page_view(deps, 0)
+        await update.message.reply_text(
+            text, reply_markup=markup, parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True)
+        return
     waiting = await update.message.reply_text(
-        "🔎 Sweeping DexScreener + safety-checking… (can take up to a minute)"
+        "🔎 Sweeping DexScreener + safety-checking… (~15-30s)"
     )
     try:
         await deps.scanner.scan_now()
@@ -534,7 +553,18 @@ async def dispatch_callback(query, context, deps, data: str):
         await safe_edit(query, fmt.help_text())
 
     elif verb == "scan":
-        await query.answer("Sweeping + safety-checking… (up to a minute)")
+        if scan_cache_fresh(deps):
+            await query.answer()
+            text, markup = scan_page_view(deps, 0)
+            await safe_edit(query, text, markup)
+        else:
+            await query.answer("Sweeping + safety-checking… (~15-30s)")
+            await deps.scanner.scan_now()
+            text, markup = scan_page_view(deps, 0)
+            await safe_edit(query, text, markup)
+
+    elif verb == "scanf":  # 🔄 Re-scan: always a live sweep
+        await query.answer("Sweeping + safety-checking… (~15-30s)")
         await deps.scanner.scan_now()
         text, markup = scan_page_view(deps, 0)
         await safe_edit(query, text, markup)

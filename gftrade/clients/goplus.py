@@ -121,6 +121,8 @@ class GoPlus:
         self.api_base = api_base or config.GOPLUS_API_BASE
         self._last_call_at = 0.0
         self._cache = {}  # mint -> (token_data|None, fetched_at)
+        # Staggers request starts under concurrency; requests overlap.
+        self._pace = asyncio.Lock()
 
     async def _security(self, mint: str):
         """Fetch (or serve cached) token_security data. Never raises: any
@@ -135,10 +137,11 @@ class GoPlus:
                 return data
 
         # ~30 req/min free tier; this is a fallback source, so pace politely.
-        wait = 2.1 - (time.time() - self._last_call_at)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        self._last_call_at = time.time()
+        async with self._pace:
+            wait = 2.1 - (time.time() - self._last_call_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_call_at = time.time()
 
         data = None
         try:

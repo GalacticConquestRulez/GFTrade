@@ -148,10 +148,13 @@ class SafetyChecker:
         self._ttl = cache_ttl or config.SAFETY_CACHE_TTL_SECONDS
         self._cache = {}  # mint -> (SafetyReport, fetched_at, ttl)
         self._last_check_at = 0.0
-        # One instance is shared by the scanner task and Telegram handlers;
-        # the lock serializes uncached checks so concurrent callers can't
-        # duplicate fetches or leapfrog the pacing sleep.
-        self._lock = asyncio.Lock()
+        # One instance is shared by the scanner task and Telegram handlers.
+        # Checks for DIFFERENT mints run concurrently (that's what makes a
+        # sweep take seconds instead of minutes) — a per-mint lock dedupes
+        # simultaneous checks of the SAME mint, and a pacing lock staggers
+        # RPC starts so concurrency can't stampede the rate limits.
+        self._mint_locks = {}  # mint -> [asyncio.Lock, refcount]
+        self._pace_lock = asyncio.Lock()
 
     def cached(self, mint: str):
         """The fresh cached report for a mint, or None — lets callers see
@@ -169,17 +172,27 @@ class SafetyChecker:
         if cached and time.time() - cached[1] < cached[2]:
             return cached[0]
 
-        async with self._lock:
-            cached = self._cache.get(mint)  # a concurrent caller may have filled it
-            if cached and time.time() - cached[1] < cached[2]:
-                return cached[0]
-            return await self._check_uncached(mint, pair)
+        entry = self._mint_locks.setdefault(mint, [asyncio.Lock(), 0])
+        entry[1] += 1
+        try:
+            async with entry[0]:
+                cached = self._cache.get(mint)  # a concurrent caller may have filled it
+                if cached and time.time() - cached[1] < cached[2]:
+                    return cached[0]
+                return await self._check_uncached(mint, pair)
+        finally:
+            entry[1] -= 1
+            if entry[1] <= 0:
+                self._mint_locks.pop(mint, None)
 
     async def _check_uncached(self, mint: str, pair: dict = None) -> SafetyReport:
-        wait = self.MIN_CHECK_INTERVAL - (time.time() - self._last_check_at)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        self._last_check_at = time.time()
+        # Stagger check STARTS (not whole checks): the pacing sleep happens
+        # under the pace lock, the network work after it runs concurrently.
+        async with self._pace_lock:
+            wait = self.MIN_CHECK_INTERVAL - (time.time() - self._last_check_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_check_at = time.time()
 
         report = SafetyReport(mint=mint)
         try:

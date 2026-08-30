@@ -139,6 +139,36 @@ class Scanner:
         )
         return verdict
 
+    async def _prefetch_safety(self, pairs: list, boosted: set,
+                               safety_budget: list) -> None:
+        """Warm the safety cache CONCURRENTLY for the screen-passing pairs,
+        spending from safety_budget. This is what turns a sweep from a
+        minute of one-by-one checks into a few seconds: the per-service
+        pacing staggers request starts, but the requests themselves overlap.
+        evaluate_pair afterwards hits the warm cache for free."""
+        overrides = self.store.settings
+        to_check = []
+        for pair in pairs:
+            if safety_budget[0] <= 0:
+                break
+            mint = (pair.get("baseToken") or {}).get("address")
+            if not mint or self.safety.cached(mint) is not None:
+                continue
+            if not filters.screen_pair(pair, boosted, overrides=overrides)[0]:
+                continue
+            safety_budget[0] -= 1
+            to_check.append((mint, pair))
+        if not to_check:
+            return
+
+        async def one(mint, pair):
+            try:
+                await self.safety.check(mint, pair=pair)
+            except Exception:
+                logger.exception("safety prefetch failed for %s", mint)
+
+        await asyncio.gather(*(one(m, p) for m, p in to_check))
+
     def _too_extended(self, verdict: dict) -> bool:
         """Trend-stage gate: price already far above its own recent low is
         a late entry — the setup that buys a pump's top. Unknown extension
@@ -270,21 +300,31 @@ class Scanner:
             self.prices.record(mint, float(pair.get("priceUsd") or 0))
         self.prices.prune()
 
+        # Warm the safety cache for every screen-passer concurrently before
+        # the sequential loop below — the loop then reads cache, not network.
+        await self._prefetch_safety(list(best_by_mint.values()), boosted,
+                                    safety_budget)
+
+        drops = {"no_pair": 0, "too_old": 0, "unvetted": 0}
+        scan_verdicts = []
         now = time.time()
         for mint in batch:
             pair = best_by_mint.get(mint)
             if pair is None:
+                drops["no_pair"] += 1
                 if now - self.pool[mint] > POOL_NO_PAIR_GRACE_HOURS * 3600:
                     del self.pool[mint]
                 continue
             age_hours = filters.pair_age_hours(pair)
             if age_hours > settings.get("max_pair_age_hours", config.MAX_PAIR_AGE_HOURS):
+                drops["too_old"] += 1
                 del self.pool[mint]  # aged out of our window for good
                 continue
 
             stats["checked"] += 1
             verdict = await self.evaluate_pair(pair, boosted,
                                                safety_budget=safety_budget)
+            scan_verdicts.append(verdict)
             if self.factors is not None:
                 try:  # every evaluated candidate is logged, passed or failed
                     self.factors.log_snapshot(verdict)
@@ -322,7 +362,61 @@ class Scanner:
                     events.append({"type": "autobuy_error", "verdict": verdict,
                                    "error": str(exc)})
             events.append({"type": "signal", "verdict": verdict})
+
+        # Every sweep refreshes the /scan list too, so the button renders
+        # instantly from at-most-90s-old data instead of paying for its
+        # own minute of API calls.
+        try:
+            self._refresh_scan_cache(scan_verdicts, stats["checked"], drops)
+        except Exception:
+            logger.exception("scan cache refresh failed")
         return events
+
+    def _refresh_scan_cache(self, verdicts: list, evaluated: int,
+                            drops: dict) -> None:
+        """Rebuild the ranked /scan browsing list from a discovery sweep's
+        verdicts using ONLY cached safety — zero extra API spend. Same
+        rules as scan_now: risky is banished, near-misses fill up to
+        SCAN_MIN_LIST, nothing unvetted is ever shown."""
+        strict = self.store.settings["security_strict"]
+        banned = 0
+        screened, near_misses = [], []
+        for verdict in verdicts:
+            if verdict["screened_ok"]:
+                if verdict["risk_tier"] == "risky":
+                    banned += 1
+                    continue
+                screened.append(verdict)
+            else:
+                verdict = dict(verdict)
+                verdict["patterns"] = patterns.scan(verdict["pair"])
+                verdict["score"], verdict["breakdown"] = scoring.score_pair(
+                    verdict["pair"], None, strict
+                )
+                near_misses.append(verdict)
+
+        tier_rank = {"safe": 0, "unverified": 1}
+        screened.sort(key=lambda v: (tier_rank.get(v.get("risk_tier"), 1),
+                                     -v.get("market_score", v["score"])))
+        near_misses.sort(key=lambda v: -v.get("market_score", v["score"]))
+        listed = screened[:30]
+        if len(listed) < self.SCAN_MIN_LIST:
+            for verdict in near_misses:
+                if len(listed) >= self.SCAN_MIN_LIST:
+                    break
+                cached = self.safety.cached(verdict["mint"])
+                if cached is None:
+                    drops["unvetted"] += 1
+                    continue  # cached-only here: never shown unvetted
+                verdict["safety"] = cached
+                verdict["risk_tier"] = safety_mod.risk_tier(cached)
+                if verdict["risk_tier"] == "risky":
+                    banned += 1
+                    continue
+                listed.append(verdict)
+        self.last_scan = {"verdicts": listed, "at": time.time(),
+                          "evaluated": evaluated, "banned": banned,
+                          "drops": drops}
 
     # ---------- signal report card ----------
 
@@ -468,6 +562,9 @@ class Scanner:
             strict = self.store.settings["security_strict"]
             evaluated = len(best_by_mint)
             drops["no_pair"] = len(batch) - evaluated
+            # Concurrent cache warm-up first — the loop below reads cache.
+            await self._prefetch_safety(list(best_by_mint.values()), boosted,
+                                        safety_budget)
             for mint, pair in best_by_mint.items():
                 verdict = await self.evaluate_pair(pair, boosted,
                                                    safety_budget=safety_budget)

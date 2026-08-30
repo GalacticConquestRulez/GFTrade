@@ -53,14 +53,18 @@ class RugCheck:
         self._client = client
         self.api_base = api_base or config.RUGCHECK_API_BASE
         self._last_call_at = 0.0
+        # Concurrent callers stagger their request STARTS through this lock
+        # (requests themselves overlap) — pacing without serializing.
+        self._pace = asyncio.Lock()
 
     async def lp_locked_pct(self, mint: str):
         """LP locked % for a mint, or None if RugCheck can't tell us.
         Politeness throttle: the free tier is tightly rate-limited."""
-        wait = 1.2 - (time.time() - self._last_call_at)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        self._last_call_at = time.time()
+        async with self._pace:
+            wait = 1.2 - (time.time() - self._last_call_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_call_at = time.time()
         resp = await self._client.get(
             f"{self.api_base}/tokens/{mint}/report", timeout=6
         )

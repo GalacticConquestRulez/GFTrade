@@ -104,7 +104,7 @@ def scan_page_kb(page_verdicts: list, page: int, total_pages: int,
         nav.append(InlineKeyboardButton("Next ▶️", callback_data=f"scp:{page + 1}"))
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton("🔄 Re-scan", callback_data="scan"),
+    rows.append([InlineKeyboardButton("🔄 Re-scan", callback_data="scanf"),
                  InlineKeyboardButton("« Menu", callback_data="m")])
     return InlineKeyboardMarkup(rows)
 

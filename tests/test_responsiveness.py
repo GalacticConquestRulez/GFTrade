@@ -179,6 +179,118 @@ async def test_scan_now_records_drop_diagnostics(store):
     assert scanner.last_scan["drops"]["too_old"] == 1
 
 
+async def test_safety_checks_for_different_mints_run_concurrently():
+    """The old global lock ran checks one-by-one — a 12-coin sweep took a
+    minute. Different mints must overlap now (same-mint dedupe still holds,
+    covered in test_safety)."""
+    import asyncio
+    from gftrade.discovery.safety import SafetyChecker
+    from test_safety import clean_rpc
+
+    class SlowLpSource:
+        def __init__(self):
+            self.in_flight = 0
+            self.max_in_flight = 0
+
+        async def lp_locked_pct(self, mint):
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+            await asyncio.sleep(0.05)
+            self.in_flight -= 1
+            return 100.0
+
+    slow = SlowLpSource()
+    checker = SafetyChecker(clean_rpc(), slow)
+    checker.MIN_CHECK_INTERVAL = 0.0
+    await asyncio.gather(*(checker.check(f"M{i}" + "x" * 40) for i in range(6)))
+    assert slow.max_in_flight > 1  # overlapped, not serialized
+
+
+async def test_scan_now_prefetches_safety_concurrently(store):
+    """scan_now warms the cache with overlapping checks instead of paying
+    for each one inside the sequential evaluation loop."""
+    import asyncio
+
+    class SlowConcurrencyProbe(FakeSafety):
+        def __init__(self):
+            super().__init__()
+            self.in_flight = 0
+            self.max_in_flight = 0
+
+        async def check(self, mint, pair=None):
+            if mint not in self._cache:
+                self.in_flight += 1
+                self.max_in_flight = max(self.max_in_flight, self.in_flight)
+                await asyncio.sleep(0.02)
+                self.in_flight -= 1
+            return await super().check(mint, pair=pair)
+
+    from gftrade.scanner import Scanner
+    from gftrade.trading.engine import TradingEngine
+
+    pairs = {mint_r(i): make_strong_pair(mint=mint_r(i), symbol=f"HOT{i}")
+             for i in range(5)}
+    dex = FakeDex(pairs_by_mint=pairs,
+                  profiles=[{"chainId": "solana", "tokenAddress": m} for m in pairs])
+    safety = SlowConcurrencyProbe()
+    scanner = Scanner(store, dex, TradingEngine(store, dex, dry_run=True), safety)
+    verdicts = await scanner.scan_now()
+    assert safety.max_in_flight > 1
+    assert all(v["safety_ok"] for v in verdicts)  # prefetch fed the loop
+
+
+async def test_background_sweep_keeps_scan_list_warm(store):
+    """A discovery tick must leave a ready-to-render /scan cache behind, so
+    the Scan button serves instantly instead of sweeping for a minute."""
+    scanner, _ = build_wide_scanner(store, 3)
+    assert scanner.last_scan is None
+    await scanner.tick()
+    cache = scanner.last_scan
+    assert cache is not None and len(cache["verdicts"]) == 3
+    assert all(v["safety_ok"] for v in cache["verdicts"])
+    assert "drops" in cache and "at" in cache
+
+
+async def test_background_scan_cache_still_banishes_risky(store):
+    """The warm cache is a display surface like any other: known-risky
+    coins must never appear in it."""
+    from gftrade.scanner import Scanner
+    from gftrade.trading.engine import TradingEngine
+    from gftrade.discovery.safety import SafetyReport
+
+    class RiskySafety(FakeSafety):
+        async def check(self, mint, pair=None):
+            self.check_calls += 1
+            report = SafetyReport(mint=mint, mint_renounced=True, freeze_none=True,
+                                  top10_pct=10.0, lp_locked_pct=2.0,  # unlocked
+                                  standard_token=True)
+            self._cache[mint] = report
+            return report
+
+    pair = make_strong_pair()
+    dex = FakeDex(pairs_by_mint={MINT_A: pair},
+                  profiles=[{"chainId": "solana", "tokenAddress": MINT_A}])
+    scanner = Scanner(store, dex, TradingEngine(store, dex, dry_run=True),
+                      RiskySafety())
+    await scanner.tick()
+    cache = scanner.last_scan
+    assert cache["verdicts"] == []
+    assert cache["banned"] == 1
+
+
+async def test_scan_serves_fresh_cache_instantly(store):
+    import time as _time
+    from types import SimpleNamespace
+    from gftrade.tg.handlers import scan_cache_fresh
+
+    deps = SimpleNamespace(scanner=SimpleNamespace(last_scan=None))
+    assert not scan_cache_fresh(deps)  # no cache -> must sweep
+    deps.scanner.last_scan = {"verdicts": [], "at": _time.time() - 30}
+    assert scan_cache_fresh(deps)  # 30s old -> instant render
+    deps.scanner.last_scan = {"verdicts": [], "at": _time.time() - 200}
+    assert not scan_cache_fresh(deps)  # stale -> live sweep
+
+
 async def test_safety_checker_cached_semantics():
     from gftrade.discovery.safety import SafetyChecker
     from test_safety import FakeRugCheck, clean_rpc
