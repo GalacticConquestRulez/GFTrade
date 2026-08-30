@@ -125,6 +125,9 @@ def settings_kb(settings: dict) -> InlineKeyboardMarkup:
          InlineKeyboardButton(
             f"{onoff(settings.get('scan_safe_only'))} Scan ✅-only",
             callback_data="stt:scan_safe_only")],
+        [InlineKeyboardButton(
+            f"{onoff(settings.get('honeypot_check', True))} 🍯 Honeypot check",
+            callback_data="stt:honeypot_check")],
         [InlineKeyboardButton("✏️ Buy presets", callback_data="ste:buy_presets"),
          InlineKeyboardButton("✏️ Slippage %", callback_data="ste:slippage_bps")],
         [InlineKeyboardButton("✏️ Take profit %", callback_data="ste:take_profit_pct"),

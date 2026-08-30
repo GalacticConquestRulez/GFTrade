@@ -8,8 +8,14 @@ version matrix; solders alone handles keys and transaction signing.
 import asyncio
 import base64
 import itertools
+import logging
+import time
 
 import httpx
+
+from . import config
+
+logger = logging.getLogger(__name__)
 
 
 class RpcError(Exception):
@@ -17,19 +23,64 @@ class RpcError(Exception):
 
 
 class SolanaRpc:
-    def __init__(self, url: str, client: httpx.AsyncClient):
+    """JSON-RPC client with an optional standby endpoint.
+
+    `fallback_url` exists so the primary can be a fast-but-newer endpoint
+    (Helius's Gatekeeper edge gateway, say) without that being a single
+    point of failure: transport errors on the primary retry once on the
+    fallback, and after RPC_FAILOVER_AFTER consecutive primary failures
+    calls skip straight to the fallback for a cooldown rather than paying
+    the primary's timeout every time. An RpcError (the node answered, it
+    just said no) is a real answer and never triggers failover."""
+
+    def __init__(self, url: str, client: httpx.AsyncClient,
+                 fallback_url: str = None):
         self.url = url
+        self.fallback_url = fallback_url or None
         self._client = client
         self._ids = itertools.count(1)
+        self._primary_failures = 0
+        self._primary_paused_until = 0.0
+
+    def _endpoints(self) -> list:
+        if not self.fallback_url:
+            return [self.url]
+        if (self._primary_failures >= config.RPC_FAILOVER_AFTER
+                and time.time() < self._primary_paused_until):
+            return [self.fallback_url]   # primary is sin-binned; skip its timeout
+        return [self.url, self.fallback_url]
+
+    async def _post(self, url: str, payload: dict):
+        resp = await self._client.post(url, json=payload, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
 
     async def _call(self, method: str, params: list):
         payload = {"jsonrpc": "2.0", "id": next(self._ids), "method": method, "params": params}
-        resp = await self._client.post(self.url, json=payload, timeout=15)
-        resp.raise_for_status()
-        body = resp.json()
-        if "error" in body:
-            raise RpcError(f"{method}: {body['error']}")
-        return body.get("result")
+        endpoints = self._endpoints()
+        last_error = None
+        for index, url in enumerate(endpoints):
+            try:
+                body = await self._post(url, payload)
+            except Exception as exc:  # transport/HTTP failure -> try the standby
+                last_error = exc
+                if url == self.url:
+                    self._primary_failures += 1
+                    if self._primary_failures >= config.RPC_FAILOVER_AFTER:
+                        self._primary_paused_until = (
+                            time.time() + config.RPC_FAILOVER_COOLDOWN_SECONDS)
+                        logger.warning(
+                            "primary RPC failed %d times; using the fallback for %ds",
+                            self._primary_failures, config.RPC_FAILOVER_COOLDOWN_SECONDS)
+                if index + 1 < len(endpoints):
+                    continue
+                raise
+            if url == self.url:
+                self._primary_failures = 0  # healthy again
+            if "error" in body:
+                raise RpcError(f"{method}: {body['error']}")
+            return body.get("result")
+        raise last_error
 
     # ---------- reads ----------
 

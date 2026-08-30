@@ -119,6 +119,21 @@ when something goes wrong.
   can be vanity-ground to spoof suffix-based checks — so Raydium pools
   must prove their lock through RugCheck/GoPlus like everyone else, and
   real evidence from either API always overrides the structural answer.
+- **Pre-buy honeypot verification.** Immediately before any buy (auto or
+  manual, live or paper), the bot reads the token's recent parsed swap
+  history from Helius's Enhanced Transactions API and checks the one
+  thing market data can't tell you: have real wallets actually *sold*
+  this token successfully? A sell is a wallet sending the token away and
+  receiving SOL in the same successful transaction — the round trip a
+  honeypot victim can't make; failed transactions never count as sells,
+  since a reverted sell is the symptom itself. Many buyers and no
+  sellers blocks the trade. Everything else — thin history, an API
+  outage, no key configured — is UNKNOWN and never blocks: an
+  unreachable API is not evidence of fraud, and must not become a way to
+  freeze trading. Toggle with 🍯 Honeypot check in /settings. The call
+  costs 100 Helius credits (a normal RPC call costs 1), which is why it
+  runs once per mint, cached, at the buy decision rather than during
+  screening.
 - **Known-risky coins are never listed, period.** Any coin with a
   known-bad check — unlocked LP, live mint or freeze authority,
   Token-2022, whale-heavy holders — is banished from `/scan` entirely
@@ -223,6 +238,17 @@ Wallet security, non-negotiable:
   wallet.
 - The public mainnet RPC rate-limits aggressively; for live trading use a
   paid RPC or exits may lag exactly when you need them.
+
+RPC latency and redundancy: `SOLANA_RPC_FALLBACK_URL` sets an optional
+standby endpoint used only when the primary errors. That lets the primary
+be a faster-but-newer endpoint — Helius's Gatekeeper edge gateway
+(`beta.helius-rpc.com`) shaves tens to hundreds of ms off every call —
+without the beta path becoming a single point of failure. Transport
+errors retry once on the standby; after three consecutive primary
+failures calls skip straight to the standby for five minutes rather than
+paying the primary's timeout each time, then try the primary again. An
+RPC *error response* (the node answered, it just said no) is a real
+answer and never triggers failover.
 
 ---
 

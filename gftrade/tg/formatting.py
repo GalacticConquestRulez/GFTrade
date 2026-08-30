@@ -494,6 +494,7 @@ def settings_text(settings: dict, dry_run: bool) -> str:
            if settings.get('autobuy_min_age_minutes') else ""),
         f"🚨 Alert min score: {settings['min_alert_score']}",
         f"❓ Unverified alerts: {'ON — flip-size only, known-bad still never alerts' if settings.get('alert_unverified') else 'off (only fully-✅ coins alert)'}",
+        f"🍯 Honeypot check: {'ON — verifies real wallets sold before buying' if settings.get('honeypot_check', True) else 'OFF — buys are not sell-verified'}",
         f"🔒 /scan shows: {'✅-only (unverified hidden too)' if settings.get('scan_safe_only') else 'safe + unverified, badged'} · known-risky never listed",
         f"🛡 Security checks: {'strict (unknown = reject)' if settings['security_strict'] else 'lenient (unknown = allow)'}",
         "",

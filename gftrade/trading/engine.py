@@ -21,6 +21,7 @@ import asyncio
 import time
 
 from .. import config, constants
+from ..clients import helius as helius_mod
 
 
 class TradeError(Exception):
@@ -40,7 +41,7 @@ def price_in_sol(pair: dict, sol_price_usd: float) -> float:
 class TradingEngine:
     def __init__(self, store, dex, jupiter=None, rpc=None, keypair=None,
                  dry_run: bool = None, factors=None, price_history=None,
-                 gecko=None):
+                 gecko=None, helius=None):
         self.store = store
         self.dex = dex
         self.jupiter = jupiter
@@ -50,6 +51,32 @@ class TradingEngine:
         self.factors = factors              # FactorLog, optional
         self.price_history = price_history  # PriceHistory, optional
         self.gecko = gecko                  # GeckoTerminal price failover, optional
+        self.helius = helius                # HeliusEnhanced honeypot check, optional
+
+    # ---------- honeypot gate ----------
+
+    async def _honeypot_block_reason(self, mint: str):
+        """A user-facing reason to refuse this buy, or None to proceed.
+
+        Runs the on-chain sell check right before money moves (it costs 100
+        Helius credits, so never during screening). Only a POSITIVE finding
+        — real buys, no successful sells — stops a trade; unknown, thin
+        history, no API key and outright failure all proceed, because an
+        unreachable API is not evidence of fraud."""
+        if self.helius is None or not self.store.settings.get("honeypot_check", True):
+            return None
+        try:
+            result = await self.helius.honeypot_check(mint)
+        except Exception:
+            return None  # never let this check itself break trading
+        if result.get("verdict") != helius_mod.HONEYPOT:
+            return None
+        return (
+            f"🍯 Honeypot signature: {result['buyers']} wallets bought this "
+            f"token recently and {result['sellers']} managed to sell.\n"
+            "Blocked — you would likely not be able to exit.\n"
+            "Turn off 'Honeypot check' in /settings to override."
+        )
 
     # ---------- balances ----------
 
@@ -89,6 +116,12 @@ class TradingEngine:
                 f"Insufficient SOL: balance {balance:.4f}, need {needed:.4f} "
                 f"(amount{'' if self.dry_run else ' + fee buffer'})."
             )
+
+        # Last gate before the fill — and it runs in dry run too, so paper
+        # trades can't book fictional wins on coins nobody can sell.
+        blocked = await self._honeypot_block_reason(mint)
+        if blocked:
+            raise TradeError(blocked)
 
         if self.dry_run:
             token_amount = sol_amount * (1 - config.SIM_FEE_PCT) / price_sol

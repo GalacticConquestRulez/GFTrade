@@ -63,6 +63,16 @@ OWNER_ID = AUTHORIZED_IDS[0] if AUTHORIZED_IDS else 0
 
 # --- Chain / execution ---
 SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+# Optional second RPC used ONLY when the primary errors out. Point the
+# primary at a faster-but-newer endpoint (e.g. Helius's Gatekeeper edge
+# gateway, beta.helius-rpc.com) and this at the boring stable one: you get
+# the lower latency on every call without a beta endpoint's hiccup being
+# able to stop trading. Unset = no fallback (previous behavior exactly).
+SOLANA_RPC_FALLBACK_URL = os.getenv("SOLANA_RPC_FALLBACK_URL", "")
+# After this many consecutive primary failures, calls go straight to the
+# fallback for a cooldown instead of paying the primary's timeout each time.
+RPC_FAILOVER_AFTER = 3
+RPC_FAILOVER_COOLDOWN_SECONDS = 300
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
 # With a (free) portal.jup.ag key we use the keyed endpoint; without one we
 # fall back to the keyless lite endpoint, which is fine for light usage.
@@ -124,6 +134,35 @@ RUGCHECK_API_BASE = os.getenv("RUGCHECK_API_BASE", "https://api.rugcheck.xyz/v1"
 # index gap doesn't leave coins stuck at ❓ unverified.
 GOPLUS_API_BASE = os.getenv("GOPLUS_API_BASE", "https://api.gopluslabs.io/api/v1")
 MIN_LP_LOCKED_PCT = 80.0         # at least this % of LP must be locked/burned
+
+
+def _helius_key_from(url: str) -> str:
+    """The api-key out of a Helius URL, so a Helius RPC entry alone is
+    enough to enable the enhanced endpoints — no second variable to set."""
+    if "helius" not in (url or ""):
+        return ""
+    from urllib.parse import parse_qs, urlparse
+    return (parse_qs(urlparse(url).query).get("api-key") or [""])[0].strip()
+
+
+# --- Honeypot verification (clients/helius.py) ---
+# Helius's Enhanced Transactions API returns human-readable swap history
+# for a mint, which answers the one question aggregate market data can't:
+# has anyone actually SOLD this token successfully? Buys with zero sells
+# is the honeypot signature — you get in, you can't get out.
+#
+# It costs 100 credits per call (vs 1 for a normal RPC call), so this is
+# NOT a screening step: it runs once per mint, cached, immediately before
+# money moves. A handful of buys a day is a rounding error on the budget;
+# calling it for every candidate in every sweep would burn a free month's
+# credits in a day.
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY", "") or _helius_key_from(SOLANA_RPC_URL) \
+    or _helius_key_from(SOLANA_RPC_FALLBACK_URL)
+HELIUS_API_BASE = os.getenv("HELIUS_API_BASE", "https://mainnet.helius-rpc.com")
+HONEYPOT_TX_LOOKBACK = 100       # recent swaps examined per check
+HONEYPOT_MIN_SELLERS = 2         # distinct wallets that must have sold successfully
+HONEYPOT_MIN_BUYS_FOR_VERDICT = 12   # below this, too little history to judge
+HONEYPOT_CACHE_TTL_SECONDS = 300
 
 # --- Discovery bookkeeping ---
 CANDIDATE_POOL_MAX = 400         # mints tracked for re-checks between scans
@@ -192,6 +231,12 @@ DEFAULT_SETTINGS = {
     # flippers, and one of them erases ten winning flips. Autobuy ignores
     # this flag entirely — money only moves itself on fully-✅ coins.
     "alert_unverified": False,
+    # Verify on-chain that real wallets have successfully SOLD a token
+    # before buying it (see HONEYPOT_* above). Blocks the buy — auto or
+    # manual — only on positive evidence: plenty of buys, no sells. An
+    # unreachable API, a thin history, or an unparseable answer is
+    # UNKNOWN and never blocks. Costs 100 Helius credits per new mint.
+    "honeypot_check": True,
     # Market-screen thresholds, editable from /settings so tuning them
     # doesn't need a server edit + restart. These override the constants
     # above at runtime; the constants remain the documented defaults.

@@ -18,6 +18,7 @@ from gftrade import wallet as wallet_mod
 from gftrade.clients.dexscreener import DexScreener
 from gftrade.clients.geckoterminal import GeckoTerminal
 from gftrade.clients.goplus import GoPlus
+from gftrade.clients.helius import HeliusEnhanced
 from gftrade.clients.jupiter import Jupiter
 from gftrade.clients.rugcheck import RugCheck
 from gftrade.discovery.lp_onchain import OnchainLp
@@ -69,7 +70,8 @@ async def run() -> None:
     keypair = load_keypair_or_exit()
 
     http = httpx.AsyncClient(follow_redirects=True)
-    rpc = SolanaRpc(config.SOLANA_RPC_URL, http)
+    rpc = SolanaRpc(config.SOLANA_RPC_URL, http,
+                    fallback_url=config.SOLANA_RPC_FALLBACK_URL)
     dex = DexScreener(http)
     jupiter = Jupiter(http)
     store = Store()
@@ -81,8 +83,10 @@ async def run() -> None:
     factors = FactorLog()
     prices = PriceHistory()
     gecko = GeckoTerminal(http)
+    helius = HeliusEnhanced(http)
     engine = TradingEngine(store, dex, jupiter, rpc, keypair,
-                           factors=factors, price_history=prices, gecko=gecko)
+                           factors=factors, price_history=prices, gecko=gecko,
+                           helius=helius)
     scanner = Scanner(store, dex, engine, safety, gecko=gecko,
                       factors=factors, prices=prices)
     deps = Deps(store=store, dex=dex, engine=engine, scanner=scanner,
