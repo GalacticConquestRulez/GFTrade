@@ -104,6 +104,14 @@ async def run() -> None:
     logger.info("starting in %s mode (scan every %ss)",
                 mode, config.SCAN_INTERVAL_SECONDS)
 
+    def _safe(url):
+        """Endpoint host without the api-key — safe for logs."""
+        return url.split("?")[0] if url else "none"
+
+    logger.info("RPC primary=%s fallback=%s limit=%s/s | honeypot check=%s",
+                _safe(config.SOLANA_RPC_URL), _safe(config.SOLANA_RPC_FALLBACK_URL),
+                config.RPC_MAX_RPS, "on" if helius.enabled else "no API key")
+
     async with app:
         await app.bot.set_my_commands(BOT_COMMANDS)
         await app.start()

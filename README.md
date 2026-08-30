@@ -250,11 +250,15 @@ Developer plan for faster sweeps. Hitting a provider's limit isn't
 dangerous — a 429 makes a safety check return unknown, so coins show ❓
 and are retried — but it does mean fewer coins clear for autobuy.
 
-RPC latency and redundancy: `SOLANA_RPC_FALLBACK_URL` sets an optional
-standby endpoint used only when the primary errors. That lets the primary
-be a faster-but-newer endpoint — Helius's Gatekeeper edge gateway
-(`beta.helius-rpc.com`) shaves tens to hundreds of ms off every call —
-without the beta path becoming a single point of failure. Transport
+RPC latency and redundancy: a second endpoint is used only when the
+primary errors, which lets the primary be a faster-but-newer endpoint
+without that becoming a single point of failure. With a Helius mainnet
+URL configured this pairs itself automatically — Helius's Gatekeeper edge
+gateway (`beta.helius-rpc.com`, which shaves tens to hundreds of ms off
+every call) becomes the primary and the configured mainnet URL becomes
+the standby, reusing the same key, so no extra configuration and no
+second copy of the key is needed. `HELIUS_GATEKEEPER=false` opts out;
+`SOLANA_RPC_FALLBACK_URL` defines both ends explicitly. Transport
 errors retry once on the standby; after three consecutive primary
 failures calls skip straight to the standby for five minutes rather than
 paying the primary's timeout each time, then try the primary again. An

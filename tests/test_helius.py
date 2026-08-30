@@ -325,3 +325,80 @@ async def test_no_fallback_configured_behaves_as_before():
     rpc = SolanaRpc("https://primary.example/rpc", client)
     with pytest.raises(httpx.ConnectError):
         await rpc._call("m", [])
+
+
+# ---------- Gatekeeper auto-pairing ----------
+
+TRACKED = ("SOLANA_RPC_URL", "SOLANA_RPC_FALLBACK_URL", "HELIUS_GATEKEEPER")
+
+
+def reload_config(**env):
+    """Reimport config under a specific environment (it reads os.environ at
+    import time) and return a SNAPSHOT of the resulting values.
+
+    A snapshot rather than the module itself because importlib.reload
+    mutates the module in place — the cleanup reload below would otherwise
+    overwrite the very values under test before any assertion ran."""
+    import importlib
+    import os
+    saved = {k: os.environ.get(k) for k in TRACKED}
+    try:
+        for key in TRACKED:
+            value = env.get(key)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        import gftrade.config as cfg
+        importlib.reload(cfg)
+        return {"SOLANA_RPC_URL": cfg.SOLANA_RPC_URL,
+                "SOLANA_RPC_FALLBACK_URL": cfg.SOLANA_RPC_FALLBACK_URL,
+                "HELIUS_API_KEY": cfg.HELIUS_API_KEY}
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        import gftrade.config as cfg
+        importlib.reload(cfg)
+
+
+MAINNET = "https://mainnet.helius-rpc.com/?api-key=testkey123"
+GATEKEEPER = "https://beta.helius-rpc.com/?api-key=testkey123"
+
+
+def test_helius_mainnet_url_auto_pairs_with_gatekeeper():
+    """A plain Helius RPC needs no extra config: the faster edge gateway
+    becomes the primary and the configured URL becomes the standby, with
+    the key carried across rather than duplicated anywhere."""
+    cfg = reload_config(SOLANA_RPC_URL=MAINNET)
+    assert cfg["SOLANA_RPC_URL"] == GATEKEEPER
+    assert cfg["SOLANA_RPC_FALLBACK_URL"] == MAINNET
+    assert cfg["HELIUS_API_KEY"] == "testkey123"  # honeypot check still keyed
+
+
+def test_explicit_fallback_is_never_overridden():
+    cfg = reload_config(SOLANA_RPC_URL=GATEKEEPER,
+                        SOLANA_RPC_FALLBACK_URL=MAINNET)
+    assert cfg["SOLANA_RPC_URL"] == GATEKEEPER
+    assert cfg["SOLANA_RPC_FALLBACK_URL"] == MAINNET
+
+
+def test_gatekeeper_can_be_switched_off():
+    cfg = reload_config(SOLANA_RPC_URL=MAINNET, HELIUS_GATEKEEPER="false")
+    assert cfg["SOLANA_RPC_URL"] == MAINNET
+    assert cfg["SOLANA_RPC_FALLBACK_URL"] == ""
+
+
+def test_non_helius_rpc_is_left_alone():
+    other = "https://my-node.example.com/rpc"
+    cfg = reload_config(SOLANA_RPC_URL=other)
+    assert cfg["SOLANA_RPC_URL"] == other
+    assert cfg["SOLANA_RPC_FALLBACK_URL"] == ""
+
+
+def test_already_gatekeeper_url_does_not_double_swap():
+    cfg = reload_config(SOLANA_RPC_URL=GATEKEEPER)
+    assert cfg["SOLANA_RPC_URL"] == GATEKEEPER
+    assert "beta.beta" not in cfg["SOLANA_RPC_URL"]

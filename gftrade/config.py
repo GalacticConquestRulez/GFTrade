@@ -63,12 +63,34 @@ OWNER_ID = AUTHORIZED_IDS[0] if AUTHORIZED_IDS else 0
 
 # --- Chain / execution ---
 SOLANA_RPC_URL = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
-# Optional second RPC used ONLY when the primary errors out. Point the
-# primary at a faster-but-newer endpoint (e.g. Helius's Gatekeeper edge
-# gateway, beta.helius-rpc.com) and this at the boring stable one: you get
-# the lower latency on every call without a beta endpoint's hiccup being
-# able to stop trading. Unset = no fallback (previous behavior exactly).
-SOLANA_RPC_FALLBACK_URL = os.getenv("SOLANA_RPC_FALLBACK_URL", "")
+# Second RPC used ONLY when the primary errors out: the primary can then be
+# a faster-but-newer endpoint without that being a single point of failure.
+
+
+def _helius_gatekeeper(url: str) -> str:
+    """Gatekeeper (edge-gateway) equivalent of a Helius mainnet URL, or ""
+    if the URL isn't one. Same API key, same responses, tens to hundreds of
+    ms faster per call because it skips the old CDN hop."""
+    if "mainnet.helius-rpc.com" not in (url or ""):
+        return ""
+    return url.replace("mainnet.helius-rpc.com", "beta.helius-rpc.com")
+
+
+# Auto-pairing: given a plain Helius mainnet RPC and no explicit fallback,
+# use Gatekeeper as the primary and the configured mainnet URL as the
+# standby. This is derived from the key already in the environment, so the
+# faster path needs no extra configuration and no second copy of the key —
+# and any hiccup on the beta endpoint falls back to the stable one
+# automatically. Set HELIUS_GATEKEEPER=false to stay on plain mainnet, or
+# set SOLANA_RPC_FALLBACK_URL explicitly to define both ends yourself.
+_EXPLICIT_FALLBACK = os.getenv("SOLANA_RPC_FALLBACK_URL", "")
+if _EXPLICIT_FALLBACK:
+    SOLANA_RPC_FALLBACK_URL = _EXPLICIT_FALLBACK
+elif _env_bool("HELIUS_GATEKEEPER", True) and _helius_gatekeeper(SOLANA_RPC_URL):
+    SOLANA_RPC_FALLBACK_URL = SOLANA_RPC_URL
+    SOLANA_RPC_URL = _helius_gatekeeper(SOLANA_RPC_URL)
+else:
+    SOLANA_RPC_FALLBACK_URL = ""
 # After this many consecutive primary failures, calls go straight to the
 # fallback for a cooldown instead of paying the primary's timeout each time.
 RPC_FAILOVER_AFTER = 3
