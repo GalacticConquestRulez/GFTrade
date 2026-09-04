@@ -80,25 +80,34 @@ class DexScreener:
         """All pairs for up to N token addresses, batched 30 per request.
         Raises only when EVERY batch fails (so exit checks can fail over to
         the backup price source); partial failures degrade gracefully."""
-        pairs = []
-        any_ok = False
-        for i in range(0, len(addresses), TOKEN_BATCH_SIZE):
-            batch = addresses[i:i + TOKEN_BATCH_SIZE]
+        batches = [addresses[i:i + TOKEN_BATCH_SIZE]
+                   for i in range(0, len(addresses), TOKEN_BATCH_SIZE)]
+
+        async def fetch(batch):
+            """One batch, with the self-healing split as the fallback.
+            Returns (pairs, ok) — ok False means nothing was recovered."""
             try:
                 data = await self._get(f"/tokens/v1/{chain_id}/{','.join(batch)}") or []
-                pairs.extend(p for p in data if p.get("chainId") == chain_id)
-                any_ok = True
+                return [p for p in data if p.get("chainId") == chain_id], True
             except Exception as exc:
                 recovered = await self._pairs_batch(chain_id, batch, depth=1)
                 if recovered:
-                    pairs.extend(recovered)
-                    any_ok = True
-                elif len(addresses) <= TOKEN_BATCH_SIZE:
+                    return recovered, True
+                if len(addresses) <= TOKEN_BATCH_SIZE:
                     raise  # single-batch call with nothing recovered
-                else:
-                    logger.warning("dexscreener batch failed permanently: %s", exc)
-            if i + TOKEN_BATCH_SIZE < len(addresses):
-                await asyncio.sleep(0.25)
+                logger.warning("dexscreener batch failed permanently: %s", exc)
+                return [], False
+
+        # Batches run concurrently rather than serially with a 0.25s gap
+        # between them: 200 mints is 7 requests against a 300/min limit,
+        # and a whole sweep spends under a dozen calls — the spacing was
+        # costing more wall time than it was protecting.
+        results = await asyncio.gather(*(fetch(b) for b in batches))
+        pairs = []
+        any_ok = False
+        for batch_pairs, ok in results:
+            pairs.extend(batch_pairs)
+            any_ok = any_ok or ok
         if not any_ok and addresses:
             raise ConnectionError("all dexscreener token batches failed")
         return pairs

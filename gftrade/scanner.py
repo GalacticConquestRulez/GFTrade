@@ -28,22 +28,29 @@ from .discovery.trend import PriceHistory
 
 logger = logging.getLogger(__name__)
 
+
+async def _none():
+    """Placeholder awaitable so an optional feed can take a slot in the
+    concurrent gather without branching the result handling."""
+    return None
+
+
 POOL_NO_PAIR_GRACE_HOURS = 3   # drop pool entries that never produce a tradable pair
-EVAL_BATCH_PER_TICK = 120      # pool mints re-checked per tick (4 DexScreener calls)
+EVAL_BATCH_PER_TICK = 200      # pool mints re-checked per tick (7 DexScreener calls)
 
 # Cap on UNCACHED safety checks per pass. Each one can cost seconds of
 # paced network calls (worse when a source is timing out), and an
 # unbounded pass once crawled for minutes — coins past the cap simply
 # stay ❓ this pass and get checked on the next; the cache makes coverage
 # catch up quickly. Cached checks are always free and never counted.
-MAX_UNCACHED_SAFETY_PER_PASS = 8
-SCAN_NOW_SAFETY_BUDGET = 12
+MAX_UNCACHED_SAFETY_PER_PASS = 150
+SCAN_NOW_SAFETY_BUDGET = 150
 # Separate budget for vetting NEAR-MISSES (coins that failed the market
 # screens) so the browsable /scan list can fill. It is deliberately its
 # own allowance rather than a share of the one above: near-miss vetting
 # is for looking at, and must never starve the alert path, which is the
 # one that moves money.
-NEAR_MISS_SAFETY_BUDGET = 6
+NEAR_MISS_SAFETY_BUDGET = 60
 
 
 class Scanner:
@@ -296,32 +303,41 @@ class Scanner:
         events = []
         settings = self.store.settings
 
-        try:
-            profiles = await self.dex.token_profiles_latest()
-            stats["profiles_new"] = self._absorb_profiles(profiles)
-            self.feed_status["profiles"] = "ok"
-        except Exception:
+        # The three feeds are independent of each other, so fetch them
+        # concurrently — run in sequence they were ~5 serial round trips
+        # before any safety work could start.
+        want_boosts = config.EXCLUDE_BOOSTED
+        profiles, mints, boosted = await asyncio.gather(
+            self.dex.token_profiles_latest(),
+            self.gecko.new_solana_pool_mints() if self.gecko is not None
+            else _none(),
+            self.dex.boosted_token_addresses() if want_boosts else _none(),
+            return_exceptions=True,
+        )
+
+        if isinstance(profiles, BaseException):
             logger.warning("token-profiles feed unavailable this tick")
             self.feed_status["profiles"] = "error"
+        else:
+            stats["profiles_new"] = self._absorb_profiles(profiles)
+            self.feed_status["profiles"] = "ok"
+
         if self.gecko is not None:
             # The early feed: every new Solana pool (pump.fun graduations
             # included) minutes after creation, not just profiled tokens.
-            try:
-                mints = await self.gecko.new_solana_pool_mints()
+            if isinstance(mints, BaseException):
+                logger.warning("geckoterminal new-pools feed unavailable this tick")
+                self.feed_status["new-pools"] = "error"
+            else:
                 stats["pools_new"] = self._absorb_mints(mints)
                 # An empty parse every time would mean the schema changed on
                 # us — surface that as degraded rather than silently "ok".
                 self.feed_status["new-pools"] = "ok" if mints else "empty"
-            except Exception:
-                logger.warning("geckoterminal new-pools feed unavailable this tick")
-                self.feed_status["new-pools"] = "error"
 
-        boosted = set()
-        if config.EXCLUDE_BOOSTED:
-            try:
-                boosted = await self.dex.boosted_token_addresses()
-            except Exception:
+        if isinstance(boosted, BaseException) or not boosted:
+            if isinstance(boosted, BaseException):
                 logger.warning("boost feed unavailable; continuing without it")
+            boosted = set()
 
         # Newest candidates first — they're the time-critical ones.
         batch = [m for m, _ in sorted(self.pool.items(), key=lambda kv: -kv[1])]

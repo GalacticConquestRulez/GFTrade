@@ -103,3 +103,54 @@ async def test_scanner_threads_pair_into_safety(store):
     assert verdict["safety"].lp_locked_pct == 100.0
     assert verdict["safety_ok"] is True
     assert verdict["risk_tier"] == "safe"
+
+
+# ---------- bonding curves resolve before the paced APIs ----------
+
+def test_bonding_curve_lock_covers_only_curves():
+    """The pre-API short-circuit is narrower than the full structural
+    rule: only venues where LP tokens cannot exist."""
+    from gftrade.discovery.safety import bonding_curve_lock
+
+    for dex_id in ("pumpfun", "launchlab"):
+        assert bonding_curve_lock(make_pair(dex_id=dex_id)) == (100.0, "curve")
+    # PumpSwap has real LP tokens, so a third party could hold genuine
+    # evidence about it — it must NOT short-circuit ahead of the APIs.
+    assert bonding_curve_lock(make_pair(mint=PUMP_MINT, dex_id="pumpswap")) is None
+    assert bonding_curve_lock(make_pair(dex_id="raydium")) is None
+    assert bonding_curve_lock(None) is None
+    assert bonding_curve_lock({}) is None
+
+
+async def test_curve_coin_never_touches_the_slow_apis():
+    """The point of the reorder: a bonding-curve coin resolves locally and
+    pays none of RugCheck's 1.2s or GoPlus's 2.1s pacing."""
+    class CountingRugCheck(FakeRugCheck):
+        def __init__(self):
+            super().__init__(100.0)
+            self.calls = 0
+
+        async def lp_locked_pct(self, mint):
+            self.calls += 1
+            return await super().lp_locked_pct(mint)
+
+    rugcheck = CountingRugCheck()
+    checker = SafetyChecker(clean_rpc(), rugcheck)
+    checker.MIN_CHECK_INTERVAL = 0.0
+    report = await checker.check(PUMP_MINT, pair=make_pair(mint=PUMP_MINT,
+                                                           dex_id="pumpfun"))
+    assert report.lp_locked_pct == 100.0
+    assert report.lp_source == "curve"
+    assert rugcheck.calls == 0  # never consulted
+
+
+async def test_pumpswap_still_lets_real_evidence_win():
+    """PumpSwap stays behind the APIs, so a real unlock verdict still
+    banishes the coin rather than being pre-empted by structure."""
+    checker = SafetyChecker(clean_rpc(), FakeRugCheck(4.0))
+    checker.MIN_CHECK_INTERVAL = 0.0
+    report = await checker.check(PUMP_MINT, pair=make_pair(mint=PUMP_MINT,
+                                                           dex_id="pumpswap"))
+    assert report.lp_locked_pct == 4.0
+    assert report.lp_source == "rugcheck"
+    assert not report.passes(strict=False)  # known-bad -> risky

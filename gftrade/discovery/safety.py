@@ -85,6 +85,28 @@ class SafetyReport:
         return " | ".join(parts)
 
 
+def bonding_curve_lock(pair):
+    """The subset of structural_lp_lock that needs NO third-party opinion
+    to be trustworthy, so it can run before the rate-limited APIs.
+
+    On a pump.fun / LaunchLab bonding curve there are no LP tokens at all
+    — liquidity is program escrow until graduation — so "what percentage
+    of the LP is locked" has no contradicting answer any source could
+    hold. That makes it safe to short-circuit here, which matters because
+    these are the most common new coins and each API round trip costs
+    seconds of paced waiting.
+
+    PumpSwap pools are deliberately NOT included: a migration pool has
+    real LP tokens, so RugCheck/GoPlus could hold genuine evidence about
+    it, and real evidence must keep beating structural inference. Those
+    stay in structural_lp_lock, consulted only after the APIs."""
+    if not isinstance(pair, dict):
+        return None
+    if str(pair.get("dexId") or "").strip().lower() in ("pumpfun", "launchlab"):
+        return 100.0, "curve"
+    return None
+
+
 def structural_lp_lock(pair):
     """(pct, source) when the trading venue itself makes an LP pull
     impossible, or None. Used strictly as the LAST rung of the LP chain —
@@ -129,14 +151,14 @@ def risk_tier(report) -> str:
 
 
 class SafetyChecker:
-    # Seconds between uncached check STARTS. This used to be the rate
-    # control, which only works if you know how many RPC calls a check
-    # makes — and that changed (the on-chain LP read added four). The real
-    # ceiling now lives in solana_rpc.RateLimiter, where requests actually
-    # leave, so this is just a light smoothing stagger: checks queue at the
-    # limiter and keep the RPC pipe saturated at exactly the configured
-    # rate, rather than being throttled twice.
-    MIN_CHECK_INTERVAL = 0.1
+    # No stagger. This was a second throttle stacked on top of the real
+    # one in solana_rpc.RateLimiter, and because its sleep was held inside
+    # a process-global lock it cost MIN_CHECK_INTERVAL x N before any work
+    # began — 14 seconds for a 140-coin sweep, buying nothing the limiter
+    # doesn't already do. Rate is enforced in exactly one place now.
+    # Kept as a constant (not deleted) so it can be reintroduced from a
+    # single spot if a provider ever needs start-spacing as well as a rate.
+    MIN_CHECK_INTERVAL = 0.0
 
     def __init__(self, rpc, rugcheck=None, cache_ttl: int = None, goplus=None,
                  onchain=None):
@@ -197,13 +219,12 @@ class SafetyChecker:
                 self._mint_locks.pop(mint, None)
 
     async def _check_uncached(self, mint: str, pair: dict = None) -> SafetyReport:
-        # Stagger check STARTS (not whole checks): the pacing sleep happens
-        # under the pace lock, the network work after it runs concurrently.
-        async with self._pace_lock:
-            wait = self.MIN_CHECK_INTERVAL - (time.time() - self._last_check_at)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._last_check_at = time.time()
+        if self.MIN_CHECK_INTERVAL:
+            async with self._pace_lock:
+                wait = self.MIN_CHECK_INTERVAL - (time.time() - self._last_check_at)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                self._last_check_at = time.time()
 
         report = SafetyReport(mint=mint)
         try:
@@ -231,10 +252,19 @@ class SafetyChecker:
             report.error = f"{type(exc).__name__}: {exc}"
 
         if config.LP_CHECK_ENABLED:
-            # Rung 0 — our own RPC reads the pool state directly. Accepted
+            # Rung 0a — bonding curves. Free, local, and definitionally
+            # unanswerable by anyone else (no LP tokens exist), so it runs
+            # before the paced APIs rather than after them. This is what
+            # keeps the most common coin type off the slow path entirely.
+            curve = bonding_curve_lock(pair)
+            if curve is not None:
+                report.lp_locked_pct, report.lp_source = curve
+
+            # Rung 0b — our own RPC reads the pool state directly. Accepted
             # ONLY as proof of a lock; below-threshold readings are ignored
             # (never unlock evidence) and the API chain decides instead.
-            if self._onchain is not None and pair is not None:
+            if (report.lp_locked_pct is None
+                    and self._onchain is not None and pair is not None):
                 try:
                     pct = await self._onchain.lp_locked_pct(mint, pair)
                 except Exception:

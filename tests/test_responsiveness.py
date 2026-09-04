@@ -77,11 +77,18 @@ async def test_discovery_pass_caps_uncached_safety_checks(store):
     assert safety.network_calls == count  # the remaining 5, cache hits free
 
 
-async def test_scan_now_caps_uncached_safety_checks(store):
-    count = SCAN_NOW_SAFETY_BUDGET + 6
+async def test_scan_now_caps_uncached_safety_checks(store, monkeypatch):
+    """Budget exhaustion leaves the remainder ❓ rather than hidden. The
+    budget is patched to a small number so this tests the behavior, not
+    whatever the production constant happens to be."""
+    import gftrade.scanner as scanner_mod
+
+    budget = 4
+    monkeypatch.setattr(scanner_mod, "SCAN_NOW_SAFETY_BUDGET", budget)
+    count = budget + 6
     scanner, safety = build_wide_scanner(store, count)
     verdicts = await scanner.scan_now()
-    assert safety.network_calls <= SCAN_NOW_SAFETY_BUDGET
+    assert safety.network_calls <= budget
     assert len(verdicts) == count  # over-budget coins still listed, as ❓
     unverified = [v for v in verdicts if v["safety"] is None]
     assert unverified  # the over-budget remainder shows as ❓, not hidden

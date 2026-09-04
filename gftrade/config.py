@@ -102,7 +102,15 @@ RPC_FAILOVER_COOLDOWN_SECONDS = 300
 # info, holders, and four more for the on-chain LP read), so 8 coins in a
 # pass is ~48 calls fired back to back. Default sits just under the free
 # tier; raise it to ~45 on Developer for faster sweeps. 0 disables.
-RPC_MAX_RPS = float(os.getenv("RPC_MAX_RPS", "8") or 8)
+RPC_MAX_RPS = float(os.getenv("RPC_MAX_RPS", "45") or 45)
+# JSON-RPC array batching: how many calls ride in one HTTP POST.
+RPC_BATCH_SIZE = _env_int("RPC_BATCH_SIZE", 100)
+# How a batch is charged against RPC_MAX_RPS. Providers differ on whether
+# a 100-call array counts as one request or a hundred, and getting it
+# wrong means either 429s or needless slowness — so it is a setting, not
+# an assumption baked into code. "1" = one slot per batch (the common
+# behavior); "size" = one slot per call inside it. Measure, then set.
+RPC_BATCH_COUNTS_AS = (os.getenv("RPC_BATCH_COUNTS_AS", "1") or "1").strip().lower()
 JUPITER_API_KEY = os.getenv("JUPITER_API_KEY", "")
 # With a (free) portal.jup.ag key we use the keyed endpoint; without one we
 # fall back to the keyless lite endpoint, which is fine for light usage.
