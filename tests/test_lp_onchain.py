@@ -77,6 +77,17 @@ class PoolRpc:
     async def get_token_account_owners(self, addresses):
         return [self.holder_owners.get(a) for a in addresses]
 
+    # Batched mirrors of the above, matching SolanaRpc's interface so the
+    # batched LP path can be exercised against the same fixture.
+    async def get_account_raws(self, addresses):
+        return {a: await self.get_account_raw(a) for a in addresses}
+
+    async def get_mint_infos(self, mints):
+        return {m: await self.get_mint_info(m) for m in mints}
+
+    async def get_token_largest_accounts_many(self, mints):
+        return {m: await self.get_token_largest_accounts(m) for m in mints}
+
 
 def raydium_pair(**overrides):
     pair = make_pair(mint=BASE_MINT, dex_id="raydium")

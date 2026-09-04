@@ -218,7 +218,81 @@ class SafetyChecker:
             if entry[1] <= 0:
                 self._mint_locks.pop(mint, None)
 
-    async def _check_uncached(self, mint: str, pair: dict = None) -> SafetyReport:
+    async def prefetch_many(self, pairs: list) -> None:
+        """Warm the cache for many pairs using BATCHED reads.
+
+        This is the speed path: instead of every coin making its own 4-6
+        HTTP requests, each phase reads all coins at once, so a 140-coin
+        sweep costs roughly a dozen requests. Crucially it changes only
+        how data is FETCHED — every evidence rule still runs per coin in
+        _check_uncached, so batched and unbatched vetting cannot drift
+        apart in what they conclude.
+
+        Coins already cached are skipped. Anything the batch can't answer
+        is simply absent from the prefetched data, and that coin falls
+        back to its own reads — missing data never becomes a verdict."""
+        wanted = {}
+        for pair in pairs:
+            mint = (pair.get("baseToken") or {}).get("address") if pair else None
+            if mint and mint not in wanted and self.cached(mint) is None:
+                wanted[mint] = pair
+        if not wanted:
+            return
+
+        mints = list(wanted)
+        try:
+            mint_infos = await self._rpc.get_mint_infos(mints)
+        except Exception:
+            logger.warning("batched mint-info read failed", exc_info=True)
+            mint_infos = {}
+
+        # Holders are only meaningful for a mint with supply, and the
+        # answer is only used to compute concentration.
+        with_supply = [m for m in mints
+                       if (mint_infos.get(m) or {}).get("supply", 0) > 0]
+        try:
+            largest = (await self._rpc.get_token_largest_accounts_many(with_supply)
+                       if with_supply else {})
+        except Exception:
+            logger.warning("batched holder read failed", exc_info=True)
+            largest = {}
+
+        lp_pcts = {}
+        if config.LP_CHECK_ENABLED and self._onchain is not None:
+            lp_pcts = await self._onchain.lp_locked_pct_many(
+                [p for p in wanted.values() if p])
+
+        prefetched = {
+            mint: {"mint_info": mint_infos.get(mint),
+                   "largest": largest.get(mint),
+                   "onchain_lp": lp_pcts.get(mint)}
+            for mint in mints
+        }
+        await asyncio.gather(*(
+            self._check_prefetched(mint, pair, prefetched[mint])
+            for mint, pair in wanted.items()
+        ), return_exceptions=True)
+
+    async def _check_prefetched(self, mint, pair, data) -> SafetyReport:
+        """check() for one mint, reusing already-batched reads."""
+        cached = self.cached(mint)
+        if cached is not None:
+            return cached
+        entry = self._mint_locks.setdefault(mint, [asyncio.Lock(), 0])
+        entry[1] += 1
+        try:
+            async with entry[0]:
+                cached = self.cached(mint)
+                if cached is not None:
+                    return cached
+                return await self._check_uncached(mint, pair, prefetched=data)
+        finally:
+            entry[1] -= 1
+            if entry[1] <= 0:
+                self._mint_locks.pop(mint, None)
+
+    async def _check_uncached(self, mint: str, pair: dict = None,
+                              prefetched: dict = None) -> SafetyReport:
         if self.MIN_CHECK_INTERVAL:
             async with self._pace_lock:
                 wait = self.MIN_CHECK_INTERVAL - (time.time() - self._last_check_at)
@@ -226,9 +300,12 @@ class SafetyChecker:
                     await asyncio.sleep(wait)
                 self._last_check_at = time.time()
 
+        prefetched = prefetched or {}
         report = SafetyReport(mint=mint)
         try:
-            mint_info = await self._rpc.get_mint_info(mint)
+            mint_info = prefetched.get("mint_info")
+            if mint_info is None:
+                mint_info = await self._rpc.get_mint_info(mint)
             if mint_info is None:
                 report.error = "mint account not found/parseable"
             else:
@@ -241,7 +318,9 @@ class SafetyChecker:
                 )
                 supply = mint_info["supply"]
                 if supply > 0:
-                    largest = await self._rpc.get_token_largest_accounts(mint)
+                    largest = prefetched.get("largest")
+                    if largest is None:
+                        largest = await self._rpc.get_token_largest_accounts(mint)
                     amounts = sorted(
                         (int(a.get("amount") or 0) for a in largest), reverse=True
                     )
@@ -263,12 +342,13 @@ class SafetyChecker:
             # Rung 0b — our own RPC reads the pool state directly. Accepted
             # ONLY as proof of a lock; below-threshold readings are ignored
             # (never unlock evidence) and the API chain decides instead.
-            if (report.lp_locked_pct is None
-                    and self._onchain is not None and pair is not None):
-                try:
-                    pct = await self._onchain.lp_locked_pct(mint, pair)
-                except Exception:
-                    pct = None
+            if report.lp_locked_pct is None and self._onchain is not None:
+                pct = prefetched.get("onchain_lp")
+                if pct is None and pair is not None:
+                    try:
+                        pct = await self._onchain.lp_locked_pct(mint, pair)
+                    except Exception:
+                        pct = None
                 if pct is not None and pct >= config.MIN_LP_LOCKED_PCT:
                     report.lp_locked_pct = pct
                     report.lp_source = "onchain"

@@ -173,14 +173,12 @@ class Scanner:
             to_check.append((mint, pair))
         if not to_check:
             return
-
-        async def one(mint, pair):
-            try:
-                await self.safety.check(mint, pair=pair)
-            except Exception:
-                logger.exception("safety prefetch failed for %s", mint)
-
-        await asyncio.gather(*(one(m, p) for m, p in to_check))
+        try:
+            # Batched: each phase reads every coin at once, so this is a
+            # handful of requests rather than 4-6 per coin.
+            await self.safety.prefetch_many([pair for _, pair in to_check])
+        except Exception:
+            logger.exception("batched safety prefetch failed")
 
     def _too_extended(self, verdict: dict) -> bool:
         """Trend-stage gate: price already far above its own recent low is

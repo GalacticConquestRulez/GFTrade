@@ -30,6 +30,8 @@ layouts — a future refinement). Burned LP needs no timestamp.
 import base64
 import logging
 
+from .. import config
+
 logger = logging.getLogger(__name__)
 
 # ---------- base58 (no external dependency) ----------
@@ -116,6 +118,100 @@ class OnchainLp:
         except Exception:
             logger.debug("onchain LP check failed for %s", mint, exc_info=True)
             return None
+
+    async def lp_locked_pct_many(self, pairs: list) -> dict:
+        """{mint: pct_or_None} for many pairs in a handful of batched RPC
+        requests instead of up to four per coin.
+
+        Same guards and same arithmetic as the single-pair path — the only
+        difference is that each phase reads every pool at once. Any pair
+        that fails a guard simply never enters the next phase, so a
+        malformed pool costs nothing and yields no verdict."""
+        try:
+            return await self._compute_many(pairs)
+        except Exception:
+            logger.debug("batched onchain LP check failed", exc_info=True)
+            return {}
+
+    async def _compute_many(self, pairs: list) -> dict:
+        # Phase 1 — only classic Raydium v4 pairs have a layout we read.
+        candidates = {}
+        for pair in pairs:
+            if not isinstance(pair, dict):
+                continue
+            if str(pair.get("dexId") or "").strip().lower() != "raydium":
+                continue
+            pool_addr = pair.get("pairAddress")
+            mint = (pair.get("baseToken") or {}).get("address")
+            if pool_addr and mint:
+                candidates[pool_addr] = pair
+        if not candidates:
+            return {}
+
+        # Phase 2 — every pool account in one batched read.
+        raws = await self._rpc.get_account_raws(list(candidates))
+        pools = {}
+        for pool_addr, pair in candidates.items():
+            owner, data = raws.get(pool_addr) or (None, None)
+            if owner != RAYDIUM_V4_PROGRAM:
+                continue
+            pool = parse_v4_pool(data)
+            if pool is None or pool["lp_reserve"] <= 0:
+                continue
+            pair_tokens = {
+                (pair.get("baseToken") or {}).get("address"),
+                (pair.get("quoteToken") or {}).get("address"),
+            }
+            if {pool["base_mint"], pool["quote_mint"]} != pair_tokens:
+                continue  # layout drift or wrong account -> no verdict
+            pools[pool["lp_mint"]] = (pair, pool)
+        if not pools:
+            return {}
+
+        # Phase 3 — every LP mint's supply in one batched read.
+        lp_infos = await self._rpc.get_mint_infos(list(pools))
+        results, need_holders = {}, []
+        for lp_mint, (pair, pool) in pools.items():
+            mint = (pair.get("baseToken") or {}).get("address")
+            info = lp_infos.get(lp_mint)
+            if info is None:
+                continue
+            supply = int(info.get("supply") or 0)
+            reserve = pool["lp_reserve"]
+            if supply > reserve:
+                continue  # bookkeeping we don't understand -> no verdict
+            burned_pct = 100.0 * (reserve - supply) / reserve
+            # Burn alone can already clear the bar; when it does, the
+            # holder lookups below are two RPC calls that cannot change
+            # the answer, so skip them.
+            if supply == 0 or burned_pct >= config.MIN_LP_LOCKED_PCT:
+                results[mint] = min(burned_pct, 100.0)
+            else:
+                need_holders.append((lp_mint, mint, reserve, supply))
+        if not need_holders:
+            return results
+
+        # Phase 4/5 — LP holders, then their owner wallets, batched.
+        holder_map = await self._rpc.get_token_largest_accounts_many(
+            [lp_mint for lp_mint, _, _, _ in need_holders])
+        addresses = []
+        for lp_mint, _, _, _ in need_holders:
+            addresses.extend(a.get("address") for a in holder_map.get(lp_mint, [])
+                             if a.get("address"))
+        owners = await self._rpc.get_token_account_owners(addresses[:100]) \
+            if addresses else []
+        owner_of = dict(zip(addresses, owners))
+
+        for lp_mint, mint, reserve, supply in need_holders:
+            locked = reserve - supply
+            for account in holder_map.get(lp_mint, []):
+                if owner_of.get(account.get("address")) in KNOWN_LOCKER_OWNERS:
+                    try:
+                        locked += int(account.get("amount") or 0)
+                    except (TypeError, ValueError):
+                        continue
+            results[mint] = 100.0 * min(locked, reserve) / reserve
+        return results
 
     async def _compute(self, pair: dict):
         if not isinstance(pair, dict):

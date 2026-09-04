@@ -105,6 +105,17 @@ class FakeSafety:
     def cached(self, mint):
         return self._cache.get(mint)
 
+    async def prefetch_many(self, pairs):
+        """Mirrors SafetyChecker.prefetch_many: warm the cache for many
+        pairs. Subclasses only override check(), so they inherit batched
+        prefetching for free."""
+        import asyncio
+        await asyncio.gather(*(
+            self.check((p.get("baseToken") or {}).get("address"), pair=p)
+            for p in pairs
+            if p and (p.get("baseToken") or {}).get("address")
+        ))
+
     async def check(self, mint, pair=None):
         self.check_calls += 1
         if mint not in self._cache:

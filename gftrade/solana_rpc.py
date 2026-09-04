@@ -41,13 +41,17 @@ class RateLimiter:
         self._lock = asyncio.Lock()
         self._next_at = 0.0
 
-    async def acquire(self) -> None:
+    async def acquire(self, slots: int = 1) -> None:
+        """Reserve `slots` worth of rate budget. A JSON-RPC array counts as
+        one request on most providers but as N on some, so batching passes
+        the count it should be charged (see config.RPC_BATCH_COUNTS_AS)."""
         if not self._interval:
             return
+        cost = self._interval * max(1, slots)
         async with self._lock:
             now = time.monotonic()
             slot = max(now, self._next_at)
-            self._next_at = slot + self._interval
+            self._next_at = slot + cost
         delay = slot - now
         if delay > 0:
             await asyncio.sleep(delay)
@@ -83,19 +87,21 @@ class SolanaRpc:
             return [self.fallback_url]   # primary is sin-binned; skip its timeout
         return [self.url, self.fallback_url]
 
-    async def _post(self, url: str, payload: dict):
-        await self._limiter.acquire()
+    async def _post(self, url: str, payload, slots: int = 1):
+        await self._limiter.acquire(slots)
         resp = await self._client.post(url, json=payload, timeout=15)
         resp.raise_for_status()
         return resp.json()
 
-    async def _call(self, method: str, params: list):
-        payload = {"jsonrpc": "2.0", "id": next(self._ids), "method": method, "params": params}
+    async def _request(self, payload, slots: int = 1):
+        """POST a JSON-RPC payload (object or array) with failover, and
+        return the parsed body. Shared by single and batched calls so both
+        get identical endpoint, retry and sin-binning behavior."""
         endpoints = self._endpoints()
         last_error = None
         for index, url in enumerate(endpoints):
             try:
-                body = await self._post(url, payload)
+                body = await self._post(url, payload, slots)
             except Exception as exc:  # transport/HTTP failure -> try the standby
                 last_error = exc
                 if url == self.url:
@@ -111,10 +117,66 @@ class SolanaRpc:
                 raise
             if url == self.url:
                 self._primary_failures = 0  # healthy again
-            if "error" in body:
-                raise RpcError(f"{method}: {body['error']}")
-            return body.get("result")
+            return body
         raise last_error
+
+    async def _call(self, method: str, params: list):
+        payload = {"jsonrpc": "2.0", "id": next(self._ids), "method": method, "params": params}
+        body = await self._request(payload)
+        if isinstance(body, dict) and "error" in body:
+            raise RpcError(f"{method}: {body['error']}")
+        return (body or {}).get("result")
+
+    async def _call_batch(self, calls: list) -> list:
+        """Send many calls as one JSON-RPC array; return results aligned to
+        `calls`, with None wherever an entry failed.
+
+        Two properties matter and are easy to get wrong:
+        - Responses may come back in ANY order, so they are matched by id,
+          never by position. A server that reorders would otherwise hand
+          one mint's answer to another mint — a correctness bug that looks
+          like random data corruption.
+        - A per-entry error is isolated to that entry (None) rather than
+          failing the batch, so one poison mint cannot blank a whole sweep.
+        Chunked to RPC_BATCH_SIZE; an entirely failed chunk yields Nones
+        for its slots instead of raising, since callers treat a missing
+        answer as "unknown" and unknown is always safe here."""
+        if not calls:
+            return []
+        results = [None] * len(calls)
+        size = max(1, config.RPC_BATCH_SIZE)
+        for start in range(0, len(calls), size):
+            chunk = calls[start:start + size]
+            by_id = {}
+            payload = []
+            for offset, call in enumerate(chunk):
+                request_id = next(self._ids)
+                by_id[request_id] = start + offset
+                payload.append({"jsonrpc": "2.0", "id": request_id,
+                                "method": call["method"],
+                                "params": call.get("params") or []})
+            slots = len(chunk) if config.RPC_BATCH_COUNTS_AS == "size" else 1
+            try:
+                body = await self._request(payload, slots)
+            except Exception:
+                logger.warning("rpc batch of %d failed; treating as unknown",
+                               len(chunk), exc_info=True)
+                continue
+            if not isinstance(body, list):
+                logger.warning("rpc batch returned %s, not an array",
+                               type(body).__name__)
+                continue
+            for entry in body:
+                if not isinstance(entry, dict):
+                    continue
+                index = by_id.get(entry.get("id"))
+                if index is None:
+                    continue  # unknown id — ignore rather than misattribute
+                if "error" in entry:
+                    logger.debug("rpc batch entry error: %s", entry["error"])
+                    continue
+                results[index] = entry.get("result")
+        return results
 
     # ---------- reads ----------
 
@@ -122,13 +184,10 @@ class SolanaRpc:
         result = await self._call("getBalance", [pubkey])
         return result["value"] / 1_000_000_000
 
-    async def get_mint_info(self, mint: str):
-        """Parsed SPL mint account: decimals, supply, and whether the mint /
-        freeze authorities still exist (None = renounced, the good case)."""
-        result = await self._call(
-            "getAccountInfo", [mint, {"encoding": "jsonParsed"}]
-        )
-        value = (result or {}).get("value")
+    @staticmethod
+    def _parse_mint_value(value):
+        """One getAccountInfo `value` -> mint dict, or None. Shared by the
+        single and batched readers so both interpret bytes identically."""
         if not value:
             return None
         parsed = ((value.get("data") or {}).get("parsed") or {})
@@ -144,6 +203,25 @@ class SolanaRpc:
             "owner_program": value.get("owner"),
         }
 
+    @staticmethod
+    def _parse_raw_value(value):
+        """One getAccountInfo `value` -> (owner_program, data_bytes)."""
+        if not value:
+            return None, None
+        data = value.get("data")
+        raw = b""
+        if isinstance(data, list) and data and isinstance(data[0], str):
+            raw = base64.b64decode(data[0])
+        return value.get("owner"), raw
+
+    async def get_mint_info(self, mint: str):
+        """Parsed SPL mint account: decimals, supply, and whether the mint /
+        freeze authorities still exist (None = renounced, the good case)."""
+        result = await self._call(
+            "getAccountInfo", [mint, {"encoding": "jsonParsed"}]
+        )
+        return self._parse_mint_value((result or {}).get("value"))
+
     async def get_token_largest_accounts(self, mint: str) -> list:
         """Top ~20 token accounts for a mint: [{address, amount(str raw)}...]."""
         result = await self._call("getTokenLargestAccounts", [mint])
@@ -155,14 +233,56 @@ class SolanaRpc:
         result = await self._call(
             "getAccountInfo", [pubkey, {"encoding": "base64"}]
         )
-        value = (result or {}).get("value")
-        if not value:
-            return None, None
-        data = value.get("data")
-        raw = b""
-        if isinstance(data, list) and data and isinstance(data[0], str):
-            raw = base64.b64decode(data[0])
-        return value.get("owner"), raw
+        return self._parse_raw_value((result or {}).get("value"))
+
+    # ---------- batched reads ----------
+    #
+    # These exist because vetting a coin costs several account reads, and
+    # doing that one HTTP request at a time is what made a 140-coin sweep
+    # take minutes. getMultipleAccounts fans 100 accounts into one call;
+    # getTokenLargestAccounts has no multi form, so it rides a JSON-RPC
+    # array instead. A missing answer is always returned as None — callers
+    # read that as "unknown", which is the safe direction.
+
+    async def _multiple_accounts(self, addresses: list, encoding: str) -> list:
+        """`value` entries for many accounts, aligned to `addresses`."""
+        if not addresses:
+            return []
+        size = 100  # getMultipleAccounts hard cap
+        calls = [{"method": "getMultipleAccounts",
+                  "params": [addresses[i:i + size], {"encoding": encoding}]}
+                 for i in range(0, len(addresses), size)]
+        values = []
+        for chunk_index, result in enumerate(await self._call_batch(calls)):
+            chunk = calls[chunk_index]["params"][0]
+            got = (result or {}).get("value") or []
+            # Pad a short/absent response so alignment with `addresses`
+            # holds no matter what came back.
+            values.extend(list(got)[:len(chunk)]
+                          + [None] * max(0, len(chunk) - len(got)))
+        return values
+
+    async def get_mint_infos(self, mints: list) -> dict:
+        """{mint: mint_info_dict_or_None} for many mints."""
+        values = await self._multiple_accounts(mints, "jsonParsed")
+        return {mint: self._parse_mint_value(value)
+                for mint, value in zip(mints, values)}
+
+    async def get_account_raws(self, addresses: list) -> dict:
+        """{address: (owner_program, data_bytes)} for many accounts."""
+        values = await self._multiple_accounts(addresses, "base64")
+        return {address: self._parse_raw_value(value)
+                for address, value in zip(addresses, values)}
+
+    async def get_token_largest_accounts_many(self, mints: list) -> dict:
+        """{mint: [{address, amount}, ...]} for many mints."""
+        if not mints:
+            return {}
+        calls = [{"method": "getTokenLargestAccounts", "params": [mint]}
+                 for mint in mints]
+        results = await self._call_batch(calls)
+        return {mint: ((result or {}).get("value") or [])
+                for mint, result in zip(mints, results)}
 
     async def get_token_account_owners(self, addresses: list) -> list:
         """The owner wallet of each SPL token account, aligned with the
