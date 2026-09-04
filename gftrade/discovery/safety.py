@@ -21,10 +21,13 @@ on expiry, and none of this sees off-chain coordination. `security_strict`
 rejects unknowns, lenient passes them with the ❓ displayed.
 """
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 
 from .. import config, constants
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -161,7 +164,7 @@ class SafetyChecker:
     MIN_CHECK_INTERVAL = 0.0
 
     def __init__(self, rpc, rugcheck=None, cache_ttl: int = None, goplus=None,
-                 onchain=None):
+                 onchain=None, cache_store=None):
         self._rpc = rpc
         # LP-lock sources, tried in order until one answers. RugCheck is
         # primary; GoPlus is the independent backup so one service's
@@ -180,6 +183,17 @@ class SafetyChecker:
         self._onchain = onchain
         self._ttl = cache_ttl or config.SAFETY_CACHE_TTL_SECONDS
         self._cache = {}  # mint -> (SafetyReport, fetched_at, ttl)
+        # Optional SafetyCacheStore. Without it the cache is process
+        # memory, so every restart re-vets the whole pool from scratch —
+        # slow, and a pile of wasted API credits.
+        self._store = cache_store
+        if self._store is not None:
+            try:
+                self._cache.update(self._store.load())
+                logger.info("safety cache warm-started with %d verdicts",
+                            len(self._cache))
+            except Exception:
+                logger.exception("safety cache load failed; starting cold")
         self._last_check_at = 0.0
         # One instance is shared by the scanner task and Telegram handlers.
         # Checks for DIFFERENT mints run concurrently (that's what makes a
@@ -393,5 +407,8 @@ class SafetyChecker:
             and report.lp_locked_pct is None
         )
         ttl = 120 if incomplete else self._ttl
-        self._cache[mint] = (report, time.time(), ttl)
+        fetched_at = time.time()
+        self._cache[mint] = (report, fetched_at, ttl)
+        if self._store is not None:
+            self._store.put(report, fetched_at, ttl)
         return report

@@ -259,7 +259,10 @@ class Scanner:
                  "signals": 0,
                  # Where candidates actually die, so "it's too selective"
                  # can be answered with counts instead of guesses (/filters).
-                 "screen_rejects": {}, "funnel": {}}
+                 "screen_rejects": {}, "funnel": {},
+                 # Per-phase seconds, so "is the sweep fast enough" is a
+                 # measurement rather than an assertion.
+                 "timing": {}}
 
         if exits:
             # Manage what we already hold — exits take priority over entries.
@@ -297,9 +300,17 @@ class Scanner:
         self.last_tick_stats = stats
         return events
 
+    @staticmethod
+    def _phase(stats: dict, name: str, started: float) -> float:
+        """Record how long a sweep phase took and return a fresh mark."""
+        now = time.perf_counter()
+        stats.setdefault("timing", {})[name] = round(now - started, 2)
+        return now
+
     async def _discover(self, stats: dict) -> list:
         events = []
         settings = self.store.settings
+        mark = time.perf_counter()
 
         # The three feeds are independent of each other, so fetch them
         # concurrently — run in sequence they were ~5 serial round trips
@@ -336,6 +347,7 @@ class Scanner:
             if isinstance(boosted, BaseException):
                 logger.warning("boost feed unavailable; continuing without it")
             boosted = set()
+        mark = self._phase(stats, "feeds", mark)
 
         # Newest candidates first — they're the time-critical ones.
         batch = [m for m, _ in sorted(self.pool.items(), key=lambda kv: -kv[1])]
@@ -344,6 +356,7 @@ class Scanner:
             return events
         safety_budget = [MAX_UNCACHED_SAFETY_PER_PASS]
         pairs = await self.dex.pairs_for_tokens(constants.CHAIN_ID, batch)
+        mark = self._phase(stats, "dexscreener", mark)
 
         best_by_mint = {}
         for pair in pairs:
@@ -364,6 +377,7 @@ class Scanner:
         # the sequential loop below — the loop then reads cache, not network.
         await self._prefetch_safety(list(best_by_mint.values()), boosted,
                                     safety_budget)
+        mark = self._phase(stats, "safety", mark)
 
         drops = {"no_pair": 0, "too_old": 0, "unvetted": 0}
         scan_verdicts = []
@@ -429,10 +443,12 @@ class Scanner:
         # Every sweep refreshes the /scan list too, so the button renders
         # instantly from at-most-90s-old data instead of paying for its
         # own minute of API calls.
+        mark = self._phase(stats, "evaluate", mark)
         try:
             await self._refresh_scan_cache(scan_verdicts, stats["checked"], drops)
         except Exception:
             logger.exception("scan cache refresh failed")
+        self._phase(stats, "scan-list", mark)
         return events
 
     async def _refresh_scan_cache(self, verdicts: list, evaluated: int,

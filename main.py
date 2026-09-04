@@ -25,6 +25,7 @@ from gftrade.discovery.lp_onchain import OnchainLp
 from gftrade.discovery.safety import SafetyChecker
 from gftrade.discovery.trend import PriceHistory
 from gftrade.factors import FactorLog
+from gftrade.safety_cache import SafetyCacheStore
 from gftrade.scanner import Scanner
 from gftrade.solana_rpc import SolanaRpc
 from gftrade.store import Store
@@ -80,7 +81,10 @@ async def run() -> None:
     # GoPlus is constructed regardless of LP_CHECK_ENABLED: its authority
     # backfill (mint/freeze when RPC reads fail) is independent of LP checks.
     goplus = GoPlus(http)
-    safety = SafetyChecker(rpc, rugcheck, goplus=goplus, onchain=OnchainLp(rpc))
+    safety_cache = SafetyCacheStore()
+    safety_cache.prune()
+    safety = SafetyChecker(rpc, rugcheck, goplus=goplus,
+                           onchain=OnchainLp(rpc), cache_store=safety_cache)
     factors = FactorLog()
     prices = PriceHistory()
     gecko = GeckoTerminal(http)
@@ -142,6 +146,7 @@ async def run() -> None:
             await app.stop()
     await http.aclose()
     factors.close()
+    safety_cache.close()
     logger.info("shut down cleanly")
 
 

@@ -122,3 +122,30 @@ def test_filters_text_renders_the_funnel_and_thresholds(store):
 
 def test_filters_text_before_any_sweep(store):
     assert "No sweep has completed" in fmt.filters_text({}, store.settings, 0)
+
+
+def test_filters_text_shows_per_phase_timing(store):
+    """The 5-10s target has to be measurable from Telegram, not inferred."""
+    stats = {"checked": 140, "funnel": {"alerted": 3},
+             "screen_rejects": {},
+             "timing": {"feeds": 0.4, "dexscreener": 0.6, "safety": 2.1,
+                        "evaluate": 0.2, "scan-list": 0.1}}
+    text = fmt.filters_text(stats, store.settings, pool_size=140)
+    assert "3.4s</b> total" in text
+    assert "safety 2.1s" in text
+    assert "dexscreener 0.6s" in text
+
+
+async def test_sweep_records_timing_for_every_phase(store):
+    from gftrade.scanner import Scanner
+    from gftrade.trading.engine import TradingEngine
+
+    dex = FakeDex(pairs_by_mint={MINT_A: make_strong_pair()},
+                  profiles=[{"chainId": "solana", "tokenAddress": MINT_A}])
+    scanner = Scanner(store, dex, TradingEngine(store, dex, dry_run=True),
+                      FakeSafety())
+    await scanner.tick()
+    timing = scanner.last_tick_stats["timing"]
+    assert set(timing) == {"feeds", "dexscreener", "safety", "evaluate",
+                           "scan-list"}
+    assert all(v >= 0 for v in timing.values())

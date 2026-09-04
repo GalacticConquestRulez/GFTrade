@@ -208,6 +208,9 @@ ALERT_COOLDOWN_HOURS = 24        # don't re-alert the same mint within this wind
 
 # --- Factor logging (factors.py / analysis.py) ---
 FACTOR_DB = os.getenv("FACTOR_DB", "factor_log.db")
+# Safety verdicts persist here so a restart does not re-vet the whole
+# candidate pool from scratch (slow, and wasted API credits).
+SAFETY_CACHE_DB = os.getenv("SAFETY_CACHE_DB", "safety_cache.db")
 FACTOR_DEDUPE_MINUTES = 30       # at most one snapshot per mint per this window
 
 # --- Volatility-scaled exits (opt-in via the vol_scaled_exits setting) ---

@@ -554,7 +554,14 @@ def filters_text(stats: dict, settings: dict, pool_size: int) -> str:
                 "minutes after a restart, then try /filters again.")
 
     lines = [f"<b>Funnel — last sweep</b> ({checked} candidates evaluated, "
-             f"{pool_size} in pool)", ""]
+             f"{pool_size} in pool)"]
+    timing = stats.get("timing") or {}
+    if timing:
+        total = sum(timing.values())
+        parts = " · ".join(f"{esc(name)} {seconds:.1f}s"
+                           for name, seconds in timing.items())
+        lines.append(f"⏱ <b>{total:.1f}s</b> total — {parts}")
+    lines.append("")
     from ..scanner import Scanner
     for stage in Scanner.FUNNEL_STAGES:
         count = funnel.get(stage, 0)
