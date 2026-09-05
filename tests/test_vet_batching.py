@@ -342,3 +342,48 @@ async def test_start_sweep_resets_the_budget():
     assert checker._spend_api_budget() is False   # spent
     checker.start_sweep(api_budget=2)
     assert checker._spend_api_budget() is True    # fresh allowance
+
+
+async def test_browse_list_vetting_never_spends_the_api_budget(store):
+    """The 11.6s-of-a-12.4s-sweep fix: near-misses failed the market
+    screens so they can't alert or be bought whatever their LP says.
+    Vetting them must not consume paced third-party calls — the whole
+    allowance belongs to the alert path."""
+    from gftrade.scanner import Scanner
+    from gftrade.trading.engine import TradingEngine
+    from conftest import FakeDex, FakeSafety, make_pair as mp
+
+    class BudgetSpy(FakeSafety):
+        def __init__(self):
+            super().__init__()
+            self._api_budget = None
+            self.budgets_seen = []
+
+        def start_sweep(self, api_budget=None):
+            self._api_budget = api_budget
+            self.budgets_seen.append(api_budget)
+
+        async def prefetch_many(self, pairs):
+            # record what the budget was while the browse list was vetted
+            self.budgets_seen.append(("prefetch", self._api_budget))
+            await super().prefetch_many(pairs)
+
+    # every coin fails the screens -> all are near-misses
+    pairs = {f"N{i:03d}" + "v" * 37: mp(mint=f"N{i:03d}" + "v" * 37,
+             liquidity=4_000, market_cap=40_000) for i in range(12)}
+    dex = FakeDex(pairs_by_mint=pairs,
+                  profiles=[{"chainId": "solana", "tokenAddress": m} for m in pairs])
+    safety = BudgetSpy()
+    scanner = Scanner(store, dex, TradingEngine(store, dex, dry_run=True), safety)
+    await scanner.tick()
+
+    prefetches = [b for b in safety.budgets_seen if isinstance(b, tuple)]
+    assert prefetches, "the browse list should have been vetted"
+    assert all(budget == 0 for _, budget in prefetches), prefetches
+
+    # The allowance is zeroed only for the browse phase and restored after,
+    # so the next sweep's alert path still gets its full budget.
+    scalars = [b for b in safety.budgets_seen if not isinstance(b, tuple)]
+    assert scalars[-1] == scalars[0], scalars   # ends as it began
+    assert 0 in scalars                          # and was zeroed in between
+    assert scanner.last_scan["verdicts"], "list still fills"

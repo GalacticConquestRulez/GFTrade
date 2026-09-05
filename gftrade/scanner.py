@@ -501,11 +501,24 @@ class Scanner:
                 # near-misses took minutes and most never finished — which
                 # is what left "N still waiting on safety vetting" with
                 # budget to spare.
+                # Near-misses are for LOOKING at — they failed the market
+                # screens, so they can't alert or be auto-bought whatever
+                # their LP says. Paying RugCheck's 1.2s and GoPlus's 2.1s
+                # pacing for them was the entire cost of this phase (11.6s
+                # of a 12.4s sweep in the field). Vet them from batched
+                # RPC + local rules only; LP simply stays ❓ on the card.
+                # The whole API allowance is left for the alert path.
+                saved = getattr(self.safety, "_api_budget", None)
                 try:
+                    if hasattr(self.safety, "start_sweep"):
+                        self.safety.start_sweep(api_budget=0)
                     await self.safety.prefetch_many(
                         [v["pair"] for v in to_check])
                 except Exception:
                     logger.exception("near-miss batched vetting failed")
+                finally:
+                    if hasattr(self.safety, "start_sweep"):
+                        self.safety.start_sweep(api_budget=saved)
             for verdict in near_misses:
                 if len(listed) >= self.SCAN_MIN_LIST:
                     break

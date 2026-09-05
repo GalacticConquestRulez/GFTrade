@@ -589,9 +589,11 @@ def filters_text(stats: dict, settings: dict, pool_size: int) -> str:
               f"{'ON (unproven = rejected)' if settings.get('security_strict') else 'off'}",
               f"  ✏️ alert ❓ unverified: "
               f"{'ON' if settings.get('alert_unverified') else 'off'}",
-              f"  liq/mcap band: {config.MIN_LIQ_TO_MCAP_RATIO}"
-              f"–{config.MAX_LIQ_TO_MCAP_RATIO} (config.py)",
-              f"  min buys 5m: {config.MIN_BUYS_5M} · "
+              f"  ✏️ liq/mcap band: "
+              f"{settings.get('min_liq_mcap_ratio', config.MIN_LIQ_TO_MCAP_RATIO)}"
+              f"–{settings.get('max_liq_mcap_ratio', config.MAX_LIQ_TO_MCAP_RATIO)}",
+              f"  ✏️ min buys 5m: "
+              f"{settings.get('min_buys_5m', config.MIN_BUYS_5M):g} · "
               f"max buy/sell ratio: {config.MAX_BUY_SELL_IMBALANCE:g} (config.py)",
               f"  exclude promoted: "
               f"{'ON' if config.EXCLUDE_BOOSTED else 'off'} (config.py)"]

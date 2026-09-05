@@ -416,6 +416,18 @@ def _parse_setting(key: str, raw: str):
         if not 0 <= value <= 10_000_000:
             raise ValueError("Value must be between 0 and 10,000,000 (USD).")
         return value
+    if key in ("min_liq_mcap_ratio", "max_liq_mcap_ratio"):
+        value = float(raw.replace("%", ""))
+        if value > 1:
+            value /= 100.0   # "5" and "0.05" both mean 5%
+        if not 0 <= value <= 1:
+            raise ValueError("Ratio must be between 0 and 1 (or 0-100 as a %).")
+        return value
+    if key == "min_buys_5m":
+        value = int(float(raw))
+        if not 0 <= value <= 500:
+            raise ValueError("Min 5m buys must be 0-500.")
+        return value
     if key == "min_buys_h1":
         value = int(float(raw))
         if not 0 <= value <= 1000:
@@ -463,6 +475,14 @@ SETTING_PROMPTS = {
                          "more (riskier) coins (current: ${v})",
     "min_volume_h1_usd": "Send new minimum 1-hour volume in USD (current: ${v})",
     "min_buys_h1": "Send new minimum buys in the last hour (current: {v})",
+    "min_buys_5m": "Send new minimum buys in the last 5 minutes (current: {v})",
+    "min_liq_mcap_ratio": "Send the new MINIMUM liquidity/market-cap ratio — "
+                          "how much real depth must back the cap. Lower shows "
+                          "thinner coins that are harder to exit. Accepts 0.03 "
+                          "or 3 (current: {v})",
+    "max_liq_mcap_ratio": "Send the new MAXIMUM liquidity/market-cap ratio — "
+                          "very high ratios flag freshly seeded or wash-traded "
+                          "pools. Accepts 0.6 or 60 (current: {v})",
     "max_pair_age_hours": "Send new maximum pair age in hours — higher keeps "
                           "coins in view longer (current: {v}h)",
     "min_pair_age_minutes": "Send new minimum pair age in minutes before a coin "

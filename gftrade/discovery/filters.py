@@ -37,6 +37,9 @@ def screen_pair(pair: dict, boosted_addresses: set = None, now_ms: float = None,
     min_buys_h1 = overrides.get("min_buys_h1", config.MIN_BUYS_H1)
     max_age_hours = overrides.get("max_pair_age_hours", config.MAX_PAIR_AGE_HOURS)
     min_age_minutes = overrides.get("min_pair_age_minutes", config.MIN_PAIR_AGE_MINUTES)
+    min_ratio = overrides.get("min_liq_mcap_ratio", config.MIN_LIQ_TO_MCAP_RATIO)
+    max_ratio = overrides.get("max_liq_mcap_ratio", config.MAX_LIQ_TO_MCAP_RATIO)
+    min_buys_5m = overrides.get("min_buys_5m", config.MIN_BUYS_5M)
 
     chain_id = pair.get("chainId")
     base_token = pair.get("baseToken") or {}
@@ -76,10 +79,10 @@ def screen_pair(pair: dict, boosted_addresses: set = None, now_ms: float = None,
     market_cap = pair.get("marketCap") or pair.get("fdv") or 0
     if market_cap > 0:
         ratio = liquidity_usd / market_cap
-        if ratio < config.MIN_LIQ_TO_MCAP_RATIO:
-            reasons.append(f"liq/mcap {ratio:.3f} below min {config.MIN_LIQ_TO_MCAP_RATIO}")
-        elif ratio > config.MAX_LIQ_TO_MCAP_RATIO:
-            reasons.append(f"liq/mcap {ratio:.3f} above max {config.MAX_LIQ_TO_MCAP_RATIO}")
+        if ratio < min_ratio:
+            reasons.append(f"liq/mcap {ratio:.3f} below min {min_ratio}")
+        elif ratio > max_ratio:
+            reasons.append(f"liq/mcap {ratio:.3f} above max {max_ratio}")
     else:
         reasons.append("no market cap data")
 
@@ -96,8 +99,8 @@ def screen_pair(pair: dict, boosted_addresses: set = None, now_ms: float = None,
     sells_5m = (txns.get("m5") or {}).get("sells", 0)
     buys_h1 = (txns.get("h1") or {}).get("buys", 0)
     sells_h1 = (txns.get("h1") or {}).get("sells", 0)
-    if buys_5m < config.MIN_BUYS_5M:
-        reasons.append(f"only {buys_5m} buys in 5m, floor {config.MIN_BUYS_5M}")
+    if buys_5m < min_buys_5m:
+        reasons.append(f"only {buys_5m} buys in 5m, floor {min_buys_5m:g}")
     if buys_h1 < min_buys_h1:
         reasons.append(f"only {buys_h1} buys in 1h, floor {min_buys_h1:g}")
     if sells_5m > 0 and buys_5m / sells_5m > config.MAX_BUY_SELL_IMBALANCE:

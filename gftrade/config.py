@@ -289,6 +289,13 @@ DEFAULT_SETTINGS = {
     # doesn't need a server edit + restart. These override the constants
     # above at runtime; the constants remain the documented defaults.
     "min_liquidity_usd": float(MIN_LIQUIDITY_USD),
+    # The liquidity/market-cap band and the 5-minute buy floor were the two
+    # biggest rejectors in real sweeps (186 and 159 of 193 candidates), and
+    # both were config-only — so the screens doing the most work were the
+    # ones that needed a server edit to tune. Runtime now.
+    "min_liq_mcap_ratio": float(MIN_LIQ_TO_MCAP_RATIO),
+    "max_liq_mcap_ratio": float(MAX_LIQ_TO_MCAP_RATIO),
+    "min_buys_5m": MIN_BUYS_5M,
     "min_volume_h1_usd": float(MIN_VOLUME_H1_USD),
     "min_buys_h1": MIN_BUYS_H1,
     "max_pair_age_hours": float(MAX_PAIR_AGE_HOURS),
