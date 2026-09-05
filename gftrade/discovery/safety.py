@@ -202,6 +202,25 @@ class SafetyChecker:
         # RPC starts so concurrency can't stampede the rate limits.
         self._mint_locks = {}  # mint -> [asyncio.Lock, refcount]
         self._pace_lock = asyncio.Lock()
+        # Remaining paced-API consultations this sweep. None = unlimited
+        # (the token-card path, where one coin's few seconds are fine).
+        self._api_budget = None
+
+    def start_sweep(self, api_budget: int = None) -> None:
+        """Begin a sweep with a fresh third-party API allowance. Called by
+        the scanner; without it the budget stays unlimited, which is the
+        right default for one-off lookups."""
+        self._api_budget = (config.API_LP_BUDGET_PER_SWEEP
+                            if api_budget is None else api_budget)
+
+    def _spend_api_budget(self) -> bool:
+        """True if this coin may consult the paced APIs."""
+        if self._api_budget is None:
+            return True
+        if self._api_budget <= 0:
+            return False
+        self._api_budget -= 1
+        return True
 
     def cached(self, mint: str):
         """The fresh cached report for a mint, or None — lets callers see
@@ -375,7 +394,14 @@ class SafetyChecker:
                 if pct is not None and pct >= config.MIN_LP_LOCKED_PCT:
                     report.lp_locked_pct = pct
                     report.lp_source = "onchain"
-            if report.lp_locked_pct is None:
+            if report.lp_locked_pct is None and self._spend_api_budget():
+                # Rung 1 — the paced third-party APIs. These are the only
+                # unbounded cost left in a sweep (RugCheck spaces requests
+                # 1.2s apart, GoPlus 2.1s), so they run under a per-sweep
+                # budget. Past it, a coin simply keeps lp_locked_pct None
+                # and is retried next sweep — exactly like the safety
+                # budget. A slow external service must never be able to
+                # decide how long our sweep takes.
                 for source_name, source in self._lp_sources:
                     try:
                         pct = await source.lp_locked_pct(mint)

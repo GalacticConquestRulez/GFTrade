@@ -172,6 +172,13 @@ RUGCHECK_API_BASE = os.getenv("RUGCHECK_API_BASE", "https://api.rugcheck.xyz/v1"
 # index gap doesn't leave coins stuck at ❓ unverified.
 GOPLUS_API_BASE = os.getenv("GOPLUS_API_BASE", "https://api.gopluslabs.io/api/v1")
 MIN_LP_LOCKED_PCT = 80.0         # at least this % of LP must be locked/burned
+# How many coins per sweep may consult the PACED third-party LP APIs.
+# RugCheck spaces requests 1.2s apart and GoPlus 2.1s, so these are the
+# only unbounded cost left in a sweep: 60 coins consulting both is ~200s
+# of pure waiting. Past this budget a coin keeps lp_locked_pct = None and
+# is retried next sweep, exactly like the safety budget. Most coins never
+# reach here anyway — bonding curves and Raydium pools resolve locally.
+API_LP_BUDGET_PER_SWEEP = _env_int("API_LP_BUDGET_PER_SWEEP", 8)
 
 
 def _helius_key_from(url: str) -> str:

@@ -277,6 +277,10 @@ class Scanner:
             return events
 
         self.sweep_started_at = time.time()
+        # Fresh third-party API allowance for this sweep — see
+        # config.API_LP_BUDGET_PER_SWEEP.
+        if hasattr(self.safety, "start_sweep"):
+            self.safety.start_sweep()
         settings = self.store.settings
         if settings["scanner_on"]:
             try:
@@ -491,15 +495,17 @@ class Scanner:
                         if self.safety.cached(v["mint"]) is None]
             to_check = uncached[:NEAR_MISS_SAFETY_BUDGET]
             if to_check:
-                async def vet(verdict):
-                    try:
-                        await self.safety.check(verdict["mint"],
-                                                pair=verdict["pair"])
-                    except Exception:
-                        logger.exception("near-miss safety check failed for %s",
-                                         verdict["mint"])
-
-                await asyncio.gather(*(vet(v) for v in to_check))
+                # Batched, like the alert path. Vetting these one at a time
+                # meant each coin paid its own RPC round trips AND the
+                # paced third-party APIs end to end, so a sweep's worth of
+                # near-misses took minutes and most never finished — which
+                # is what left "N still waiting on safety vetting" with
+                # budget to spare.
+                try:
+                    await self.safety.prefetch_many(
+                        [v["pair"] for v in to_check])
+                except Exception:
+                    logger.exception("near-miss batched vetting failed")
             for verdict in near_misses:
                 if len(listed) >= self.SCAN_MIN_LIST:
                     break

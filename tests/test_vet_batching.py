@@ -261,3 +261,84 @@ async def test_real_holder_data_still_computes_concentration():
     await checker.prefetch_many([{"dexId": "pumpfun",
                                   "baseToken": {"address": mint}}])
     assert checker.cached(mint).top10_pct == 10.0
+
+
+# ---------- third-party API budget ----------
+
+class SlowApi:
+    """Stand-in for RugCheck/GoPlus: counts how many coins reach it."""
+    def __init__(self):
+        self.calls = 0
+
+    async def lp_locked_pct(self, mint):
+        self.calls += 1
+        return None  # can't answer -> coin stays unverified
+
+
+async def test_paced_apis_are_bounded_per_sweep():
+    """RugCheck/GoPlus pace requests 1.2s and 2.1s apart, so an unbounded
+    sweep lets a slow external service decide how long our sweep takes.
+    Past the budget, coins keep lp unknown and retry next sweep."""
+    from gftrade import constants
+    from gftrade.discovery.safety import SafetyChecker
+
+    class Rpc:
+        async def get_mint_infos(self, mints):
+            return {m: {"decimals": 9, "supply": 1000, "mint_authority": None,
+                        "freeze_authority": None,
+                        "owner_program": constants.TOKEN_PROGRAM_ID}
+                    for m in mints}
+
+        async def get_token_largest_accounts_many(self, mints):
+            return {m: [{"address": "pool", "amount": "900"},
+                        {"address": "w", "amount": "50"}] for m in mints}
+
+    api = SlowApi()
+    checker = SafetyChecker(Rpc(), api)
+    checker.MIN_CHECK_INTERVAL = 0.0
+    checker.start_sweep(api_budget=3)
+
+    # 10 raydium coins: none resolve locally, so all would reach the API
+    pairs = [make_pair(mint=f"R{i:03d}" + "j" * 37, dex_id="raydium")
+             for i in range(10)]
+    await checker.prefetch_many(pairs)
+
+    assert api.calls == 3, api.calls  # budget honoured
+    # Every coin still got a report; the over-budget ones are unverified.
+    reports = [checker.cached(p["baseToken"]["address"]) for p in pairs]
+    assert all(r is not None for r in reports)
+    assert all(not r.passes(strict=True) for r in reports)   # LP unknown
+    assert all(r.passes(strict=False) for r in reports)      # not condemned
+
+
+async def test_api_budget_is_unlimited_without_a_sweep():
+    """The token-card path checks one coin on demand; a few seconds there
+    is fine, so it must not inherit a sweep's budget."""
+    from gftrade import constants
+    from gftrade.discovery.safety import SafetyChecker
+
+    class Rpc:
+        async def get_mint_info(self, mint):
+            return {"decimals": 9, "supply": 0, "mint_authority": None,
+                    "freeze_authority": None,
+                    "owner_program": constants.TOKEN_PROGRAM_ID}
+
+    api = SlowApi()
+    checker = SafetyChecker(Rpc(), api)
+    checker.MIN_CHECK_INTERVAL = 0.0
+    for i in range(5):
+        await checker.check(f"T{i:03d}" + "m" * 37,
+                            pair=make_pair(dex_id="raydium"))
+    assert api.calls == 5  # no budget applied
+
+
+async def test_start_sweep_resets_the_budget():
+    from gftrade.discovery.safety import SafetyChecker
+
+    checker = SafetyChecker(None, SlowApi())
+    checker.start_sweep(api_budget=2)
+    assert checker._spend_api_budget() is True
+    assert checker._spend_api_budget() is True
+    assert checker._spend_api_budget() is False   # spent
+    checker.start_sweep(api_budget=2)
+    assert checker._spend_api_budget() is True    # fresh allowance
