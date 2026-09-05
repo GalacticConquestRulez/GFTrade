@@ -333,14 +333,23 @@ class SafetyChecker:
                 supply = mint_info["supply"]
                 if supply > 0:
                     largest = prefetched.get("largest")
-                    if largest is None:
+                    if not largest:
+                        # Empty is not an answer: a mint with supply always
+                        # has holders, so [] means the read failed or was
+                        # unavailable. Retry it individually before giving up.
                         largest = await self._rpc.get_token_largest_accounts(mint)
-                    amounts = sorted(
-                        (int(a.get("amount") or 0) for a in largest), reverse=True
-                    )
-                    # Drop the biggest account (presumed LP), take the next 10.
-                    top10 = sum(amounts[1:11])
-                    report.top10_pct = 100.0 * top10 / supply
+                    if largest:
+                        amounts = sorted(
+                            (int(a.get("amount") or 0) for a in largest),
+                            reverse=True
+                        )
+                        # Drop the biggest account (presumed LP), take the next 10.
+                        top10 = sum(amounts[1:11])
+                        report.top10_pct = 100.0 * top10 / supply
+                    # Still nothing: top10_pct stays None = UNKNOWN. Computing
+                    # 0.0 from an empty list would read as perfect holder
+                    # distribution and let a coin nobody verified reach the
+                    # safe tier and become autobuy-eligible.
         except Exception as exc:  # RPC down/rate-limited — report unknown, don't crash the scan
             report.error = f"{type(exc).__name__}: {exc}"
 

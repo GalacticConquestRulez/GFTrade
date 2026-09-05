@@ -193,3 +193,71 @@ async def test_batched_lp_ignores_non_raydium_pairs():
     pairs = [make_pair(mint=BASE_MINT, dex_id="pumpswap"),
              make_pair(mint=BASE_MINT, dex_id="pumpfun")]
     assert await OnchainLp(rpc).lp_locked_pct_many(pairs) == {}
+
+
+async def test_failed_holder_read_never_looks_like_perfect_distribution():
+    """Regression: an empty holder list from a failed batch entry used to
+    compute top10_pct = 0.0 — which reads as ideal distribution and let a
+    coin nobody verified reach the safe tier and become autobuy-eligible.
+    An empty result is not an answer; it must stay unknown."""
+    from gftrade import constants
+    from gftrade.discovery.safety import SafetyChecker
+
+    class HolderBatchDown:
+        """Mint info resolves; every holder read comes back empty."""
+        def __init__(self):
+            self.individual_retries = 0
+
+        async def get_mint_infos(self, mints):
+            return {m: {"decimals": 9, "supply": 1000, "mint_authority": None,
+                        "freeze_authority": None,
+                        "owner_program": constants.TOKEN_PROGRAM_ID}
+                    for m in mints}
+
+        async def get_token_largest_accounts_many(self, mints):
+            return {m: [] for m in mints}      # what a failed batch returns
+
+        async def get_token_largest_accounts(self, mint):
+            self.individual_retries += 1
+            return []                           # the retry fails too
+
+        async def get_mint_info(self, mint):
+            raise AssertionError("mint info was prefetched; should not refetch")
+
+    rpc = HolderBatchDown()
+    checker = SafetyChecker(rpc, None)
+    checker.MIN_CHECK_INTERVAL = 0.0
+    mint = "H" * 44
+    await checker.prefetch_many([{"dexId": "pumpfun",
+                                  "baseToken": {"address": mint}}])
+    report = checker.cached(mint)
+    assert report.top10_pct is None          # unknown, not 0.0
+    assert not report.passes(strict=True)    # cannot autobuy
+    assert report.passes(strict=False)       # but not condemned either
+    assert rpc.individual_retries == 1       # empty batch triggers one retry
+
+
+async def test_real_holder_data_still_computes_concentration():
+    """The guard must not swallow a legitimate reading."""
+    from gftrade import constants
+    from gftrade.discovery.safety import SafetyChecker
+
+    class GoodRpc:
+        async def get_mint_infos(self, mints):
+            return {m: {"decimals": 9, "supply": 1000, "mint_authority": None,
+                        "freeze_authority": None,
+                        "owner_program": constants.TOKEN_PROGRAM_ID}
+                    for m in mints}
+
+        async def get_token_largest_accounts_many(self, mints):
+            # largest (the pool) is dropped; next ten sum to 100/1000 = 10%
+            return {m: [{"address": "pool", "amount": "500"},
+                        {"address": "w1", "amount": "60"},
+                        {"address": "w2", "amount": "40"}] for m in mints}
+
+    checker = SafetyChecker(GoodRpc(), None)
+    checker.MIN_CHECK_INTERVAL = 0.0
+    mint = "G" * 44
+    await checker.prefetch_many([{"dexId": "pumpfun",
+                                  "baseToken": {"address": mint}}])
+    assert checker.cached(mint).top10_pct == 10.0
